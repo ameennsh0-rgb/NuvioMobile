@@ -45,6 +45,14 @@ jobs:
             touch local.properties
           fi
 
+      - name: Check sync config is present
+        run: |
+          if ! grep -Eq '^NUVIO_SUPABASE_URL=.+' local.properties || ! grep -Eq '^NUVIO_SUPABASE_ANON_KEY=.+' local.properties; then
+            echo "::error::NUVIO_LOCAL_PROPERTIES_BASE64 secret is missing or incomplete; account sync would not work."
+            exit 1
+          fi
+          echo "Sync config present."
+
       - name: Use a fixed debug signing key
         # Without this every CI run signs with a new random key, and Android
         # refuses to install an update over the previous build.

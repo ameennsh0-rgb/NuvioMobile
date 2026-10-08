@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.nuvio.app.core.network.SupabaseConfig
 import com.nuvio.app.features.player.PlayerSettingsStorage
 
 /**
@@ -39,6 +40,12 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
                     text = "Shows a thumbnail above the seek bar while you scrub, using Seekr. " +
                         "Paste your API key from seekr.tv. Leave empty to turn it off. " +
                         "Takes effect the next time you open the player.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val syncHost = SupabaseConfig.URL.substringAfter("://").substringBefore('/')
+                Text(
+                    text = "Build: seekr-2 · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
