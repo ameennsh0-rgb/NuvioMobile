@@ -45,6 +45,13 @@ jobs:
             touch local.properties
           fi
 
+      - name: Use a fixed debug signing key
+        # Without this every CI run signs with a new random key, and Android
+        # refuses to install an update over the previous build.
+        run: |
+          mkdir -p ~/.android
+          cp .github/seekr-debug.keystore ~/.android/debug.keystore
+
       - name: Build APK
         run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --stacktrace
 
