@@ -43,6 +43,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import com.nuvio.app.features.player.seekr.SeekPreviewHost
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -698,8 +702,19 @@ internal fun PlayerSeekBar(
 ) {
     val seekDurationMs = durationMs.coerceAtLeast(1L)
     val seekDescription = stringResource(Res.string.player_seek_position)
+    val seekInteractionSource = remember { MutableInteractionSource() }
+    val seekPressed by seekInteractionSource.collectIsPressedAsState()
+    val seekDragged by seekInteractionSource.collectIsDraggedAsState()
     Column(modifier = modifier) {
+      SeekPreviewHost(
+        positionMs = displayedPositionMs.coerceIn(0L, seekDurationMs),
+        durationMs = durationMs,
+        active = durationMs > 0L && (seekPressed || seekDragged),
+        modifier = Modifier.fillMaxWidth(),
+        timeLabel = ::formatPlaybackTime,
+      ) {
         Slider(
+            interactionSource = seekInteractionSource,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(metrics.sliderTouchHeight)
@@ -712,6 +727,7 @@ internal fun PlayerSeekBar(
             valueRange = 0f..seekDurationMs.toFloat(),
             track = { sliderState -> PlayerProgressTrack(sliderState) },
         )
+      }
         Row(
             modifier = Modifier
                 .fillMaxWidth()

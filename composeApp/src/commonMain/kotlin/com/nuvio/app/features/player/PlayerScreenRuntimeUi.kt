@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.p2p.formatP2pMegabytes
 import com.nuvio.app.features.p2p.formatP2pSpeed
+import com.nuvio.app.features.player.seekr.LocalSeekPreviewTrack
+import com.nuvio.app.features.player.seekr.rememberSeekPreviewTrack
 import com.nuvio.app.features.player.skip.internalSkipAction
 import com.nuvio.app.features.streams.streamAddonInstanceId
 import com.nuvio.app.isIos
@@ -265,6 +268,16 @@ private fun PlayerScreenRuntime.currentInitialPositionRequestKey(): String? {
 @Composable
 private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, isEpisode: Boolean) {
     val isInPip = rememberIsInPictureInPicture()
+    val seekrApiKey = remember { PlayerSettingsStorage.loadSeekrApiKey().orEmpty() }
+    val seekPreviewTrack = rememberSeekPreviewTrack(
+        apiKey = seekrApiKey,
+        contentId = parentMetaId,
+        contentType = contentType ?: parentMetaType,
+        season = activeSeasonNumber,
+        episode = activeEpisodeNumber,
+        durationMs = playbackSnapshot.durationMs,
+    )
+    CompositionLocalProvider(LocalSeekPreviewTrack provides seekPreviewTrack) {
     AnimatedVisibility(
         visible = (controlsVisible || showParentalGuide) && !playerControlsLocked && !isInPip,
         enter = fadeIn(),
@@ -386,6 +399,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             horizontalSafePadding = horizontalSafePadding,
             modifier = Modifier.fillMaxSize(),
         )
+    }
     }
 }
 

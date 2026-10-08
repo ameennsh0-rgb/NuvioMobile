@@ -144,6 +144,9 @@ internal fun LazyListScope.playbackSettingsContent(
             libassRenderType = libassRenderType,
         )
     }
+    item {
+        SeekrSettingsSection(isTablet = isTablet)
+    }
 }
 
 private fun formatStep(value: Float): String {

@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.accentBrush
 import com.nuvio.app.core.ui.themePalette
 import com.nuvio.app.core.ui.nuvioTypeScale
+import com.nuvio.app.features.player.seekr.SeekPreviewHost
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
@@ -129,6 +130,14 @@ internal fun PlayerTimeline(
     )
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+      SeekPreviewHost(
+        positionMs = (scrubPosition ?: displayedPositionMs).coerceIn(0L, durationMs),
+        durationMs = durationMs,
+        active = isInteracting,
+        modifier = Modifier.fillMaxWidth(),
+        verticalGap = 28.dp,
+        timeLabel = ::formatPlaybackTime,
+      ) {
         Slider(
             value = displayedPositionMs.coerceIn(0L, durationMs).toFloat(),
             onValueChange = { value ->
@@ -181,5 +190,6 @@ internal fun PlayerTimeline(
                 .requiredHeight(48.dp)
                 .semantics { contentDescription = description },
         )
+      }
     }
 }

@@ -32,6 +32,7 @@ actual object PlayerSettingsStorage {
     private const val externalPlayerForwardSubtitlesKey = "external_player_forward_subtitles"
     private const val externalPlayerSendSkipSegmentsKey = "external_player_send_skip_segments"
     private const val externalPlayerIdKey = "external_player_id"
+    private const val seekrApiKeyKey = "seekr_api_key"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
     private const val preferredSubtitleLanguageKey = "preferred_subtitle_language"
@@ -368,6 +369,21 @@ actual object PlayerSettingsStorage {
 
     actual fun saveExternalPlayerSendSkipSegments(enabled: Boolean) {
         NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(externalPlayerSendSkipSegmentsKey))
+    }
+
+    actual fun loadSeekrApiKey(): String? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        return defaults.stringForKey(ProfileScopedKey.of(seekrApiKeyKey))
+    }
+
+    actual fun saveSeekrApiKey(apiKey: String?) {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(seekrApiKeyKey)
+        if (apiKey.isNullOrBlank()) {
+            defaults.removeObjectForKey(key)
+        } else {
+            defaults.setObject(apiKey.trim(), forKey = key)
+        }
     }
 
     actual fun loadExternalPlayerId(): String? {

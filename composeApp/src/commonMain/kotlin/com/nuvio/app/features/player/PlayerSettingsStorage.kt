@@ -33,6 +33,8 @@ internal expect object PlayerSettingsStorage {
     fun saveExternalPlayerSendSkipSegments(enabled: Boolean)
     fun loadExternalPlayerId(): String?
     fun saveExternalPlayerId(playerId: String?)
+    fun loadSeekrApiKey(): String?
+    fun saveSeekrApiKey(apiKey: String?)
     fun loadPreferredAudioLanguage(): String?
     fun savePreferredAudioLanguage(language: String)
     fun loadSecondaryPreferredAudioLanguage(): String?

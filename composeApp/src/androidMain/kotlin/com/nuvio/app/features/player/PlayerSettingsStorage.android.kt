@@ -34,6 +34,7 @@ actual object PlayerSettingsStorage {
     private const val externalPlayerForwardSubtitlesKey = "external_player_forward_subtitles"
     private const val externalPlayerSendSkipSegmentsKey = "external_player_send_skip_segments"
     private const val externalPlayerIdKey = "external_player_id"
+    private const val seekrApiKeyKey = "seekr_api_key"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
     private const val preferredSubtitleLanguageKey = "preferred_subtitle_language"
@@ -397,6 +398,19 @@ actual object PlayerSettingsStorage {
         preferences
             ?.edit()
             ?.putBoolean(ProfileScopedKey.of(externalPlayerSendSkipSegmentsKey), enabled)
+            ?.apply()
+    }
+
+    actual fun loadSeekrApiKey(): String? =
+        preferences?.getString(ProfileScopedKey.of(seekrApiKeyKey), null)
+
+    actual fun saveSeekrApiKey(apiKey: String?) {
+        preferences
+            ?.edit()
+            ?.apply {
+                val key = ProfileScopedKey.of(seekrApiKeyKey)
+                if (apiKey.isNullOrBlank()) remove(key) else putString(key, apiKey.trim())
+            }
             ?.apply()
     }
 
