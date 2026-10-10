@@ -55,6 +55,16 @@ android {
     compileSdkMinor = libs.versions.android.compileSdkMinor.get().toInt()
 
     signingConfigs {
+        // Fixed key for fork debug builds so each new APK installs over the last one.
+        val seekrDebugKeystore = rootProject.file(".github/seekr-debug.keystore")
+        if (seekrDebugKeystore.isFile) {
+            create("seekrDebug") {
+                storeFile = seekrDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
             if (releaseKeystore != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
                 storeFile = releaseKeystore
@@ -119,6 +129,9 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            signingConfigs.findByName("seekrDebug")?.let { signingConfig = it }
+        }
         getByName("release") {
             val minifyRelease = providers.gradleProperty("releaseMinifyEnabled")
                 .map(String::toBooleanStrict)
