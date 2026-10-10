@@ -386,6 +386,14 @@ actual object PlayerSettingsStorage {
         }
     }
 
+    actual fun loadLocalSeekPreviewEnabled(): Boolean = false
+
+    actual fun saveLocalSeekPreviewEnabled(enabled: Boolean) {}
+
+    actual fun loadLocalSeekPreviewWifiOnly(): Boolean = true
+
+    actual fun saveLocalSeekPreviewWifiOnly(enabled: Boolean) {}
+
     actual fun loadExternalPlayerId(): String? {
         val defaults = NSUserDefaults.standardUserDefaults
         val key = ProfileScopedKey.of(externalPlayerIdKey)

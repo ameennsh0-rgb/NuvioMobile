@@ -24,6 +24,8 @@ import com.nuvio.app.features.player.PlayerSettingsStorage
 @Composable
 internal fun SeekrSettingsSection(isTablet: Boolean) {
     var apiKey by remember { mutableStateOf(PlayerSettingsStorage.loadSeekrApiKey().orEmpty()) }
+    var localFallback by remember { mutableStateOf(PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) }
+    var wifiOnly by remember { mutableStateOf(PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()) }
 
     SettingsSection(
         title = "Seek preview thumbnails",
@@ -38,14 +40,14 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
             ) {
                 Text(
                     text = "Shows a thumbnail above the seek bar while you scrub, using Seekr. " +
-                        "Paste your API key from seekr.tv. Leave empty to turn it off. " +
+                        "Paste your API key from seekr.tv, or leave it empty to use only on-device previews. " +
                         "Takes effect the next time you open the player.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 val syncHost = SupabaseConfig.URL.substringAfter("://").substringBefore('/')
                 Text(
-                    text = "Build: seekr-2 · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
+                    text = "Build: seekr-3 (local fallback) · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -59,6 +61,31 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            SettingsGroupDivider(isTablet = isTablet)
+            SettingsSwitchRow(
+                title = "Generate previews on this device",
+                description = "When Seekr has no previews for a title (e.g. Malayalam and other regional films), " +
+                    "build them from the stream itself. Works with direct links, not HLS or torrents.",
+                checked = localFallback,
+                isTablet = isTablet,
+                onCheckedChange = {
+                    localFallback = it
+                    PlayerSettingsStorage.saveLocalSeekPreviewEnabled(it)
+                },
+            )
+            SettingsGroupDivider(isTablet = isTablet)
+            SettingsSwitchRow(
+                title = "Pre-generate on Wi-Fi only",
+                description = "Previews near where you scrub are always generated. The background pass " +
+                    "(about one frame per minute) only runs on Wi-Fi to save mobile data.",
+                checked = wifiOnly,
+                enabled = localFallback,
+                isTablet = isTablet,
+                onCheckedChange = {
+                    wifiOnly = it
+                    PlayerSettingsStorage.saveLocalSeekPreviewWifiOnly(it)
+                },
+            )
         }
     }
 }

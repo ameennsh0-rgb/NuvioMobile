@@ -276,6 +276,11 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
         season = activeSeasonNumber,
         episode = activeEpisodeNumber,
         durationMs = playbackSnapshot.durationMs,
+        sourceUrl = if (activeTorrentInfoHash != null) null else activeSourceUrl,
+        sourceHeaders = activeSourceHeaders,
+        streamType = activeStreamType,
+        isP2p = activeTorrentInfoHash != null,
+        playerBusy = playbackSnapshot.isLoading,
     )
     CompositionLocalProvider(LocalSeekPreviewTrack provides seekPreviewTrack) {
     AnimatedVisibility(

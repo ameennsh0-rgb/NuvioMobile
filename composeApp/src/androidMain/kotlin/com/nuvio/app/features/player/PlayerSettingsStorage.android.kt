@@ -35,6 +35,8 @@ actual object PlayerSettingsStorage {
     private const val externalPlayerSendSkipSegmentsKey = "external_player_send_skip_segments"
     private const val externalPlayerIdKey = "external_player_id"
     private const val seekrApiKeyKey = "seekr_api_key"
+    private const val localSeekPreviewEnabledKey = "local_seek_preview_enabled"
+    private const val localSeekPreviewWifiOnlyKey = "local_seek_preview_wifi_only"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
     private const val preferredSubtitleLanguageKey = "preferred_subtitle_language"
@@ -412,6 +414,20 @@ actual object PlayerSettingsStorage {
                 if (apiKey.isNullOrBlank()) remove(key) else putString(key, apiKey.trim())
             }
             ?.apply()
+    }
+
+    actual fun loadLocalSeekPreviewEnabled(): Boolean =
+        preferences?.getBoolean(ProfileScopedKey.of(localSeekPreviewEnabledKey), true) ?: true
+
+    actual fun saveLocalSeekPreviewEnabled(enabled: Boolean) {
+        preferences?.edit()?.putBoolean(ProfileScopedKey.of(localSeekPreviewEnabledKey), enabled)?.apply()
+    }
+
+    actual fun loadLocalSeekPreviewWifiOnly(): Boolean =
+        preferences?.getBoolean(ProfileScopedKey.of(localSeekPreviewWifiOnlyKey), true) ?: true
+
+    actual fun saveLocalSeekPreviewWifiOnly(enabled: Boolean) {
+        preferences?.edit()?.putBoolean(ProfileScopedKey.of(localSeekPreviewWifiOnlyKey), enabled)?.apply()
     }
 
     actual fun loadExternalPlayerId(): String? =

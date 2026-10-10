@@ -35,6 +35,10 @@ internal expect object PlayerSettingsStorage {
     fun saveExternalPlayerId(playerId: String?)
     fun loadSeekrApiKey(): String?
     fun saveSeekrApiKey(apiKey: String?)
+    fun loadLocalSeekPreviewEnabled(): Boolean
+    fun saveLocalSeekPreviewEnabled(enabled: Boolean)
+    fun loadLocalSeekPreviewWifiOnly(): Boolean
+    fun saveLocalSeekPreviewWifiOnly(enabled: Boolean)
     fun loadPreferredAudioLanguage(): String?
     fun savePreferredAudioLanguage(language: String)
     fun loadSecondaryPreferredAudioLanguage(): String?

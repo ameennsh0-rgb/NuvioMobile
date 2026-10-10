@@ -16,7 +16,7 @@ internal class SeekPreviewTrack(
     val cues: List<SeekPreviewCue>,
     /** Client duration / source duration, as returned by Seekr. */
     val scale: Double,
-) {
+) : SeekPreviewSource {
     val sheetUrls: List<String> = cues.map { it.sheetUrl }.distinct()
 
     /** Cue for a playback position in the video being played, or null. */

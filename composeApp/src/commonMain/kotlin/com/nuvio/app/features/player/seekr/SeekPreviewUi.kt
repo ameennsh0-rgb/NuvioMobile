@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player.seekr
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
@@ -23,6 +24,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.nuvio.app.features.player.PlayerSettingsStorage
+import kotlinx.coroutines.awaitCancellation
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -44,15 +51,16 @@ import coil3.compose.rememberAsyncImagePainter
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 
-/** The preview track for whatever is playing; null when unavailable or disabled. */
-internal val LocalSeekPreviewTrack = compositionLocalOf<SeekPreviewTrack?> { null }
+/** The preview source for whatever is playing (Seekr or on-device); null when unavailable. */
+internal val LocalSeekPreviewTrack = compositionLocalOf<SeekPreviewSource?> { null }
 
 internal val SeekPreviewThumbWidth: Dp = 160.dp
 internal val SeekPreviewThumbHeight: Dp = 90.dp
 
 /**
- * Looks up Seekr previews for the current title. Re-runs when the title, episode or
- * (second-rounded) duration changes. Returns null until loaded or if Seekr has nothing.
+ * Looks up Seekr previews for the current title. If Seekr has nothing (or no key is set) and the
+ * fallback is enabled, generates previews on the device from the stream itself.
+ * Re-runs when the title, episode, stream or (second-rounded) duration changes.
  */
 @Composable
 internal fun rememberSeekPreviewTrack(
@@ -62,27 +70,63 @@ internal fun rememberSeekPreviewTrack(
     season: Int?,
     episode: Int?,
     durationMs: Long,
-): SeekPreviewTrack? {
+    sourceUrl: String? = null,
+    sourceHeaders: Map<String, String> = emptyMap(),
+    streamType: String? = null,
+    isP2p: Boolean = false,
+    playerBusy: Boolean = false,
+): SeekPreviewSource? {
     val durationSec = durationMs / 1000L
-    var track by remember(apiKey, contentId, contentType, season, episode, durationSec) {
-        mutableStateOf<SeekPreviewTrack?>(null)
+    var track by remember(apiKey, contentId, contentType, season, episode, durationSec, sourceUrl) {
+        mutableStateOf<SeekPreviewSource?>(null)
     }
     val context = LocalPlatformContext.current
-    LaunchedEffect(apiKey, contentId, contentType, season, episode, durationSec) {
-        if (apiKey.isBlank() || durationSec <= 0L) return@LaunchedEffect
-        val content = seekrContentFor(contentId, contentType, season, episode) ?: return@LaunchedEffect
-        val loaded = SeekrClient.loadTrack(apiKey, content, durationMs) ?: return@LaunchedEffect
-        track = loaded
-        // Warm the disk cache so scrubbing is instant; keep them out of memory until needed.
-        val loader = SingletonImageLoader.get(context)
-        loaded.sheetUrls.forEach { url ->
-            loader.enqueue(
-                ImageRequest.Builder(context)
-                    .data(url)
-                    .memoryCachePolicy(CachePolicy.DISABLED)
-                    .size(coil3.size.Size.ORIGINAL)
-                    .build(),
-            )
+    val scope = rememberCoroutineScope()
+    val busy by rememberUpdatedState(playerBusy)
+    val headers by rememberUpdatedState(sourceHeaders)
+
+    LaunchedEffect(apiKey, contentId, contentType, season, episode, durationSec, sourceUrl) {
+        if (durationSec <= 0L) return@LaunchedEffect
+        val content = seekrContentFor(contentId, contentType, season, episode)
+        val seekr = if (apiKey.isNotBlank() && content != null) {
+            SeekrClient.loadTrack(apiKey, content, durationMs)
+        } else {
+            null
+        }
+        if (seekr != null) {
+            track = seekr
+            // Warm the disk cache so scrubbing is instant; keep them out of memory until needed.
+            val loader = SingletonImageLoader.get(context)
+            seekr.sheetUrls.forEach { url ->
+                loader.enqueue(
+                    ImageRequest.Builder(context)
+                        .data(url)
+                        .memoryCachePolicy(CachePolicy.DISABLED)
+                        .size(coil3.size.Size.ORIGINAL)
+                        .build(),
+                )
+            }
+            return@LaunchedEffect
+        }
+
+        // Fallback: Seekr doesn't know this title (common for regional films).
+        if (!PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) return@LaunchedEffect
+        if (!LocalPreviewTrack.isEligible(sourceUrl, streamType, isP2p)) return@LaunchedEffect
+        val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
+        val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
+        val local = LocalPreviewTrack(
+            grabber = PreviewFrameGrabber(sourceUrl!!, headers),
+            durationMs = durationMs,
+            cacheKey = cacheKey,
+            backgroundPassEnabled = { !wifiOnly || isOnUnmeteredNetwork() },
+            playerBusy = { busy },
+        )
+        local.start(scope)
+        track = local
+        try {
+            awaitCancellation()
+        } finally {
+            local.close()
         }
     }
     return track
@@ -165,22 +209,78 @@ internal fun SeekPreviewHost(
 
     Box(modifier = modifier.onSizeChanged { barWidthPx = it.width }) {
         content()
-        val cue = if (active && track != null && durationMs > 0L) track.cueAt(positionMs) else null
-        if (cue != null) {
-            SeekPreviewThumbnail(
-                cue = cue,
-                timeLabel = timeLabel(positionMs),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .zIndex(10f)
-                    .onSizeChanged { previewSize = it }
-                    .offset {
-                        val fraction = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                        val maxX = (barWidthPx - previewSize.width).coerceAtLeast(0)
-                        val x = (barWidthPx * fraction - previewSize.width / 2f).roundToInt().coerceIn(0, maxX)
-                        IntOffset(x, -(previewSize.height + gapPx))
-                    },
-            )
+        val placement = Modifier
+            .align(Alignment.TopStart)
+            .zIndex(10f)
+            .onSizeChanged { previewSize = it }
+            .offset {
+                val fraction = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                val maxX = (barWidthPx - previewSize.width).coerceAtLeast(0)
+                val x = (barWidthPx * fraction - previewSize.width / 2f).roundToInt().coerceIn(0, maxX)
+                IntOffset(x, -(previewSize.height + gapPx))
+            }
+        val showing = active && durationMs > 0L
+        when (track) {
+            is SeekPreviewTrack -> {
+                val cue = if (showing) track.cueAt(positionMs) else null
+                if (cue != null) {
+                    SeekPreviewThumbnail(cue = cue, timeLabel = timeLabel(positionMs), modifier = placement)
+                }
+            }
+            is LocalPreviewTrack -> if (showing) {
+                val bucket = track.bucketFor(positionMs)
+                LaunchedEffect(track, bucket) { track.request(positionMs) }
+                LocalPreviewThumbnail(
+                    frame = track.frameNear(positionMs),
+                    timeLabel = timeLabel(positionMs),
+                    modifier = placement,
+                )
+            }
+            null -> Unit
         }
+    }
+}
+
+/** Thumbnail generated on the device; shows a dark box with the time until a frame is ready. */
+@Composable
+internal fun LocalPreviewThumbnail(
+    frame: ImageBitmap?,
+    timeLabel: String,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top,
+    ) {
+        Box(
+            Modifier
+                .size(SeekPreviewThumbWidth, SeekPreviewThumbHeight)
+                .clip(shape)
+                .background(Color.Black.copy(alpha = 0.85f))
+                .border(1.5.dp, Color.White.copy(alpha = 0.85f), shape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (frame != null) {
+                Image(
+                    bitmap = frame,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = timeLabel,
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        )
     }
 }
