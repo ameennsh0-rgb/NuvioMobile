@@ -2,15 +2,21 @@ name: tmp mpv inspect
 on:
   push:
     branches: [tmp-mpv-inspect]
+    paths: [.github/workflows/tmp-mpv-inspect.yml]
+permissions:
+  contents: write
 jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: 17 }
       - run: |
-          curl -sSLo lib.aar https://repo1.maven.org/maven2/io/github/abdallahmehiz/mpv-android-lib/0.1.12/mpv-android-lib-0.1.12.aar
-          unzip -o -q lib.aar classes.jar
-          unzip -l classes.jar | grep class
-          for c in $(unzip -Z1 classes.jar | grep '\.class$' | grep -v '\$' | sed 's/\.class$//'); do javap -cp classes.jar -public "$c"; done
-          javap -cp classes.jar -public 'is.xyz.mpv.MPV$EventObserver' 'is.xyz.mpv.MPV$LogObserver' || true
+          curl -sSLo /tmp/lib.aar https://repo1.maven.org/maven2/io/github/abdallahmehiz/mpv-android-lib/0.1.12/mpv-android-lib-0.1.12.aar
+          cd /tmp && unzip -o -q lib.aar classes.jar
+          { unzip -Z1 classes.jar | grep '\.class$';
+            for c in $(unzip -Z1 classes.jar | grep '\.class$' | sed 's/\.class$//; s#/#.#g'); do javap -cp classes.jar -public "$c"; done; } > $GITHUB_WORKSPACE/mpv-api.txt 2>&1
+          cd $GITHUB_WORKSPACE
+          git config user.name ci; git config user.email ci@example.com
+          git add mpv-api.txt; git commit -m "mpv api dump"; git push
