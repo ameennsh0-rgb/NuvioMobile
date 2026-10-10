@@ -1,0 +1,16 @@
+name: tmp mpv inspect
+on:
+  push:
+    branches: [tmp-mpv-inspect]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: 17 }
+      - run: |
+          curl -sSLo lib.aar https://repo1.maven.org/maven2/io/github/abdallahmehiz/mpv-android-lib/0.1.12/mpv-android-lib-0.1.12.aar
+          unzip -o -q lib.aar classes.jar
+          unzip -l classes.jar | grep class
+          for c in $(unzip -Z1 classes.jar | grep '\.class$' | grep -v '\$' | sed 's/\.class$//'); do javap -cp classes.jar -public "$c"; done
+          javap -cp classes.jar -public 'is.xyz.mpv.MPV$EventObserver' 'is.xyz.mpv.MPV$LogObserver' || true
