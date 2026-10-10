@@ -44,7 +44,7 @@ internal class LocalPreviewTrack(
     /** Spacing between thumbnails: at least 10s, at most [MAX_FRAMES] frames per title. */
     val intervalMs: Long = (durationMs / MAX_FRAMES).coerceAtLeast(MIN_INTERVAL_MS)
     private val bucketCount: Int = (durationMs / intervalMs).toInt() + 1
-    private val diskKey = "v2:$cacheKey@$intervalMs"
+    private val diskKey = "v3:$cacheKey@$intervalMs"
 
     private val frames = mutableStateMapOf<Int, ImageBitmap>()
     private val missing = HashSet<Int>()

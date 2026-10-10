@@ -45,6 +45,10 @@ internal actual class PreviewFrameGrabber actual constructor(
 
     private var retrieverMisses = 0
     private var retrieverSucceeded = false
+    private var lastFingerprint = 0L
+    private var lastPositionMs = -1L
+    private var sameFrameStreak = 0
+    private var distinctFrames = 0
 
     actual suspend fun grab(positionMs: Long): ImageBitmap? = withContext(Dispatchers.IO) {
         lock.withLock {
@@ -53,6 +57,22 @@ internal actual class PreviewFrameGrabber actual constructor(
             if (!retrieverFailed) {
                 val frame = grabWithRetriever(positionMs)
                 if (frame != null) {
+                    // Some files can't be seeked by the extractor: it returns the same picture
+                    // for every timestamp. Reject repeats and stop once that's clearly the case.
+                    val fp = frame.asAndroidBitmap().fingerprint()
+                    val repeat = fp == lastFingerprint && positionMs != lastPositionMs
+                    lastFingerprint = fp
+                    lastPositionMs = positionMs
+                    if (repeat) {
+                        if (++sameFrameStreak >= 3 && distinctFrames <= 1) {
+                            seekPreviewLog("extractor returns the same frame for every position; file isn't seekable here")
+                            retrieverFailed = true
+                            mpvFailed = true // mpv's hidden instance gives blank frames on this device
+                        }
+                        return@withLock null
+                    }
+                    sameFrameStreak = 0
+                    distinctFrames++
                     retrieverSucceeded = true
                     return@withLock frame
                 }
@@ -292,6 +312,17 @@ private class MpvThumbnailer(
         const val OPEN_TIMEOUT_MS = 20_000L
         const val SEEK_TIMEOUT_MS = 15_000L
     }
+}
+
+/** Cheap content fingerprint from an 8x8 grid of pixels. */
+private fun Bitmap.fingerprint(): Long {
+    var h = 1125899906842597L
+    for (gy in 0 until 8) for (gx in 0 until 8) {
+        val x = ((gx + 0.5f) * width / 8).toInt().coerceIn(0, width - 1)
+        val y = ((gy + 0.5f) * height / 8).toInt().coerceIn(0, height - 1)
+        h = 31 * h + getPixel(x, y)
+    }
+    return h
 }
 
 /** True for an all-black (or nearly) frame: a decode that produced no picture. */

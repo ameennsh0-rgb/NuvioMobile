@@ -203,7 +203,12 @@ internal fun rememberSeekPreviewTrack(
                     CloudThumbsClient.progress(cloudRepo, cloudToken, cloudKey!!)
                         ?.takeIf { it.stage != "failed" }
                         ?.let { p ->
-                            val label = "cloud: ${p.label()}"
+                            val quietSec = kotlin.time.Clock.System.now().epochSeconds - p.at
+                            val label = if (quietSec > 300 && p.stage == "extracting") {
+                                "cloud: stalled at ${p.done}/${p.total}"
+                            } else {
+                                "cloud: ${p.label()}"
+                            }
                             local?.note = label
                             if (local == null && baseReason != null) {
                                 track = SeekPreviewUnavailable("$baseReason · $label")
@@ -379,7 +384,7 @@ internal fun SeekPreviewHost(
                 LaunchedEffect(track, bucket) { track.request(positionMs) }
                 val frame = track.frameNear(positionMs)
                 val status = when {
-                    track.failed && frame == null -> "on-device: can't read this stream"
+                    track.failed && frame == null -> "on-device: can't seek this file"
                     track.failed -> "on-device ${track.readyCount}/${track.totalCount} · stopped"
                     frame == null -> "on-device: grabbing…"
                     else -> "on-device ${track.readyCount}/${track.totalCount}"
