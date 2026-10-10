@@ -1,6 +1,10 @@
 package com.nuvio.app.features.player.seekr
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -11,8 +15,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-/** Anything the seek bar can show previews from. */
+/** Anything the seek bar can show previews from (or a reason there's nothing to show). */
 internal sealed interface SeekPreviewSource
+
+/** Seekr lookup still in flight. */
+internal data object SeekPreviewLookingUp : SeekPreviewSource
+
+/** No previews for this stream, with a short human-readable reason. */
+internal data class SeekPreviewUnavailable(val reason: String) : SeekPreviewSource
 
 /**
  * On-device fallback for titles Seekr doesn't cover (e.g. regional films).
@@ -43,7 +53,18 @@ internal class LocalPreviewTrack(
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private var lastTarget = 0
     private var consecutiveFailures = 0
-    private var gaveUp = false
+    private var gaveUp by mutableStateOf(false)
+
+    /** Frames generated or loaded from cache so far (observable). */
+    var readyCount by mutableIntStateOf(0)
+        private set
+
+    /** Total thumbnail slots for this title. */
+    val totalCount: Int get() = bucketCount
+
+    /** True once the stream proved unreadable (codec/link); nothing more will be generated. */
+    val failed: Boolean get() = gaveUp
+    private val loaded = HashSet<Int>()
     private var job: Job? = null
 
     fun bucketFor(positionMs: Long): Int =
@@ -121,6 +142,10 @@ internal class LocalPreviewTrack(
 
     private suspend fun load(bucket: Int) {
         if (bucket !in 0 until bucketCount || bucket in frames || bucket in missing) return
+        if (bucket in loaded) {
+            // Evicted from memory earlier; it's on disk.
+            PreviewFrameCache.load(diskKey, bucket)?.let { put(bucket, it); return }
+        }
         val cached = PreviewFrameCache.load(diskKey, bucket)
         if (cached != null) {
             put(bucket, cached)
@@ -152,6 +177,7 @@ internal class LocalPreviewTrack(
 
     private fun put(bucket: Int, frame: ImageBitmap) {
         frames[bucket] = frame
+        if (loaded.add(bucket)) readyCount = loaded.size
         if (frames.size > MAX_IN_MEMORY) {
             // Drop the frame farthest from where the user last scrubbed; it stays on disk.
             frames.keys.maxByOrNull { abs(it - lastTarget) }?.let { frames.remove(it) }
@@ -168,21 +194,27 @@ internal class LocalPreviewTrack(
         const val MAX_IN_MEMORY = 150
         const val MAX_CONSECUTIVE_FAILURES = 4
 
-        /** Streams the platform frame grabber can read directly (no HLS/DASH, no torrents). */
-        fun isEligible(url: String?, streamType: String?, isP2p: Boolean): Boolean {
-            val ok = checkEligible(url, streamType, isP2p)
-            seekPreviewLog("eligible=$ok p2p=$isP2p type=$streamType url=${url?.substringBefore('?')?.take(120)}")
-            return ok
+        /**
+         * Why the platform frame grabber can't read this stream, or null if it can
+         * (direct HTTP files only: no HLS/DASH, no torrents).
+         */
+        fun ineligibleReason(url: String?, streamType: String?, isP2p: Boolean): String? {
+            val reason = checkEligible(url, streamType, isP2p)
+            seekPreviewLog("ineligible=$reason p2p=$isP2p type=$streamType url=${url?.substringBefore('?')?.take(120)}")
+            return reason
         }
 
-        private fun checkEligible(url: String?, streamType: String?, isP2p: Boolean): Boolean {
-            if (url.isNullOrBlank() || isP2p) return false
-            if (!url.startsWith("http://") && !url.startsWith("https://")) return false
+        private fun checkEligible(url: String?, streamType: String?, isP2p: Boolean): String? {
+            if (isP2p) return "torrent stream"
+            if (url.isNullOrBlank()) return "no stream link"
+            if (!url.startsWith("http://") && !url.startsWith("https://")) return "not a web link"
             val lowerUrl = url.lowercase().substringBefore('?')
-            if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mpd") || "m3u8" in lowerUrl) return false
+            if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mpd") || "m3u8" in lowerUrl) return "HLS/DASH stream"
             val type = streamType?.lowercase().orEmpty()
-            if ("hls" in type || "dash" in type || "youtube" in type) return false
-            return isLocalSeekPreviewSupported()
+            if ("hls" in type || "dash" in type) return "HLS/DASH stream"
+            if ("youtube" in type) return "YouTube stream"
+            if (!isLocalSeekPreviewSupported()) return "not supported on this device"
+            return null
         }
     }
 }

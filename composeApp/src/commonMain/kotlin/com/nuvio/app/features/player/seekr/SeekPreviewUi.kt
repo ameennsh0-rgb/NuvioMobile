@@ -90,6 +90,7 @@ internal fun rememberSeekPreviewTrack(
         val content = seekrContentFor(contentId, contentType, season, episode)
         seekPreviewLog("start id=$contentId type=$contentType s=$season e=$episode dur=${durationSec}s seekrKey=${apiKey.isNotBlank()}")
         val seekr = if (apiKey.isNotBlank() && content != null) {
+            track = SeekPreviewLookingUp
             SeekrClient.loadTrack(apiKey, content, durationMs)
         } else {
             null
@@ -112,11 +113,20 @@ internal fun rememberSeekPreviewTrack(
         }
 
         // Fallback: Seekr doesn't know this title (common for regional films).
+        val seekrNote = when {
+            apiKey.isBlank() -> "no Seekr key"
+            content == null -> "no IMDb/TMDB id for Seekr"
+            else -> "Seekr has none"
+        }
         if (!PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) {
             seekPreviewLog("local fallback disabled in settings")
+            track = SeekPreviewUnavailable("$seekrNote · on-device previews off")
             return@LaunchedEffect
         }
-        if (!LocalPreviewTrack.isEligible(sourceUrl, streamType, isP2p)) return@LaunchedEffect
+        LocalPreviewTrack.ineligibleReason(sourceUrl, streamType, isP2p)?.let { reason ->
+            track = SeekPreviewUnavailable("$seekrNote · $reason")
+            return@LaunchedEffect
+        }
         val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
         val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
         val local = LocalPreviewTrack(
@@ -136,6 +146,49 @@ internal fun rememberSeekPreviewTrack(
         }
     }
     return track
+}
+
+/** Small "SEEKR" / "LOCAL" tag in the thumbnail's corner. */
+@Composable
+private fun SourceBadge(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        color = Color.White,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.6.sp,
+        modifier = modifier
+            .padding(4.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.65f))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
+}
+
+/** Time under the thumbnail, with an optional smaller status line. */
+@Composable
+private fun PreviewCaption(timeLabel: String, status: String?) {
+    Spacer(Modifier.height(4.dp))
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.Black.copy(alpha = 0.6f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(text = timeLabel, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        if (status != null) {
+            Text(text = status, color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp)
+        }
+    }
+}
+
+/** Shown while scrubbing when there's no thumbnail, saying why. */
+@Composable
+internal fun SeekPreviewReasonChip(timeLabel: String, reason: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        PreviewCaption(timeLabel = timeLabel, status = reason)
+    }
 }
 
 /** Thumbnail tile cropped out of its sprite sheet, with the scrub time underneath. */
@@ -161,6 +214,7 @@ internal fun SeekPreviewThumbnail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top,
     ) {
+        Box(Modifier.size(SeekPreviewThumbWidth, SeekPreviewThumbHeight)) {
         Spacer(
             Modifier
                 .size(SeekPreviewThumbWidth, SeekPreviewThumbHeight)
@@ -179,17 +233,9 @@ internal fun SeekPreviewThumbnail(
                     }
                 },
         )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = timeLabel,
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color.Black.copy(alpha = 0.6f))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-        )
+        SourceBadge("SEEKR", Modifier.align(Alignment.TopStart))
+        }
+        PreviewCaption(timeLabel = timeLabel, status = null)
     }
 }
 
@@ -236,11 +282,25 @@ internal fun SeekPreviewHost(
             is LocalPreviewTrack -> if (showing) {
                 val bucket = track.bucketFor(positionMs)
                 LaunchedEffect(track, bucket) { track.request(positionMs) }
+                val frame = track.frameNear(positionMs)
+                val status = when {
+                    track.failed && frame == null -> "can't read this stream"
+                    track.failed -> "${track.readyCount}/${track.totalCount} ready · stopped"
+                    frame == null -> "generating…"
+                    else -> "${track.readyCount}/${track.totalCount} ready"
+                }
                 LocalPreviewThumbnail(
-                    frame = track.frameNear(positionMs),
+                    frame = frame,
                     timeLabel = timeLabel(positionMs),
+                    status = status,
                     modifier = placement,
                 )
+            }
+            is SeekPreviewLookingUp -> if (showing) {
+                SeekPreviewReasonChip(timeLabel(positionMs), "checking Seekr…", placement)
+            }
+            is SeekPreviewUnavailable -> if (showing) {
+                SeekPreviewReasonChip(timeLabel(positionMs), "No preview: ${track.reason}", placement)
             }
             null -> Unit
         }
@@ -252,6 +312,7 @@ internal fun SeekPreviewHost(
 internal fun LocalPreviewThumbnail(
     frame: ImageBitmap?,
     timeLabel: String,
+    status: String?,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(8.dp)
@@ -276,17 +337,8 @@ internal fun LocalPreviewThumbnail(
                     modifier = Modifier.matchParentSize(),
                 )
             }
+            SourceBadge("LOCAL", Modifier.align(Alignment.TopStart))
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = timeLabel,
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color.Black.copy(alpha = 0.6f))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-        )
+        PreviewCaption(timeLabel = timeLabel, status = status)
     }
 }
