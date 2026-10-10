@@ -59,6 +59,9 @@ internal class LocalPreviewTrack(
     var readyCount by mutableIntStateOf(0)
         private set
 
+    /** Extra status shown under the time (e.g. "cloud: generating"). */
+    var note by mutableStateOf<String?>(null)
+
     /** Total thumbnail slots for this title. */
     val totalCount: Int get() = bucketCount
 

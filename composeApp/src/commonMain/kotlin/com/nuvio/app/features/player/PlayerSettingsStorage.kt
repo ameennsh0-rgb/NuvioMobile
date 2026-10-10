@@ -39,6 +39,10 @@ internal expect object PlayerSettingsStorage {
     fun saveLocalSeekPreviewEnabled(enabled: Boolean)
     fun loadLocalSeekPreviewWifiOnly(): Boolean
     fun saveLocalSeekPreviewWifiOnly(enabled: Boolean)
+    fun loadThumbsRepo(): String?
+    fun saveThumbsRepo(repo: String?)
+    fun loadThumbsToken(): String?
+    fun saveThumbsToken(token: String?)
     fun loadPreferredAudioLanguage(): String?
     fun savePreferredAudioLanguage(language: String)
     fun loadSecondaryPreferredAudioLanguage(): String?

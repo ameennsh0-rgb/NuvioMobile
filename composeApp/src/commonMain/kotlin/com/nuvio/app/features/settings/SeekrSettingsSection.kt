@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -26,6 +27,8 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
     var apiKey by remember { mutableStateOf(PlayerSettingsStorage.loadSeekrApiKey().orEmpty()) }
     var localFallback by remember { mutableStateOf(PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) }
     var wifiOnly by remember { mutableStateOf(PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()) }
+    var thumbsRepo by remember { mutableStateOf(PlayerSettingsStorage.loadThumbsRepo().orEmpty()) }
+    var thumbsToken by remember { mutableStateOf(PlayerSettingsStorage.loadThumbsToken().orEmpty()) }
 
     SettingsSection(
         title = "Seek preview thumbnails",
@@ -47,7 +50,7 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
                 )
                 val syncHost = SupabaseConfig.URL.substringAfter("://").substringBefore('/')
                 Text(
-                    text = "Build: seekr-5 (mpv thumbnails) · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
+                    text = "Build: seekr-6 (cloud thumbnails) · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -86,6 +89,40 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
                     PlayerSettingsStorage.saveLocalSeekPreviewWifiOnly(it)
                 },
             )
+            SettingsGroupDivider(isTablet = isTablet)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Cloud thumbnails: your private GitHub repo (e.g. you/nuvio-thumbs) generates " +
+                        "previews from TorBox's cache. Used when Seekr has none. Use a fine-grained token " +
+                        "limited to that repo (Contents: read and write).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = thumbsRepo,
+                    onValueChange = {
+                        thumbsRepo = it
+                        PlayerSettingsStorage.saveThumbsRepo(it)
+                    },
+                    label = { Text("Thumbnail repo (owner/name)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                SettingsSecretTextField(
+                    value = thumbsToken,
+                    onValueChange = {
+                        thumbsToken = it
+                        PlayerSettingsStorage.saveThumbsToken(it)
+                    },
+                    label = "GitHub token",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }

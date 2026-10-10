@@ -50,6 +50,7 @@ import coil3.compose.LocalPlatformContext
 import coil3.compose.rememberAsyncImagePainter
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
+import coil3.network.httpHeaders
 
 /** The preview source for whatever is playing (Seekr or on-device); null when unavailable. */
 internal val LocalSeekPreviewTrack = compositionLocalOf<SeekPreviewSource?> { null }
@@ -89,6 +90,23 @@ internal fun rememberSeekPreviewTrack(
         if (durationSec <= 0L) return@LaunchedEffect
         val content = seekrContentFor(contentId, contentType, season, episode)
         seekPreviewLog("start id=$contentId type=$contentType s=$season e=$episode dur=${durationSec}s seekrKey=${apiKey.isNotBlank()}")
+
+        fun warm(t: SeekPreviewTrack) {
+            // Warm the disk cache so scrubbing is instant; keep them out of memory until needed.
+            val loader = SingletonImageLoader.get(context)
+            t.sheetUrls.forEach { url ->
+                loader.enqueue(
+                    ImageRequest.Builder(context)
+                        .data(url)
+                        .withHeaders(t.requestHeaders)
+                        .memoryCachePolicy(CachePolicy.DISABLED)
+                        .size(coil3.size.Size.ORIGINAL)
+                        .build(),
+                )
+            }
+        }
+
+        // 1) Seekr.
         val seekr = if (apiKey.isNotBlank() && content != null) {
             track = SeekPreviewLookingUp
             SeekrClient.loadTrack(apiKey, content, durationMs)
@@ -98,51 +116,99 @@ internal fun rememberSeekPreviewTrack(
         seekPreviewLog("seekr track=${seekr != null}")
         if (seekr != null) {
             track = seekr
-            // Warm the disk cache so scrubbing is instant; keep them out of memory until needed.
-            val loader = SingletonImageLoader.get(context)
-            seekr.sheetUrls.forEach { url ->
-                loader.enqueue(
-                    ImageRequest.Builder(context)
-                        .data(url)
-                        .memoryCachePolicy(CachePolicy.DISABLED)
-                        .size(coil3.size.Size.ORIGINAL)
-                        .build(),
-                )
-            }
+            warm(seekr)
             return@LaunchedEffect
         }
 
-        // Fallback: Seekr doesn't know this title (common for regional films).
+        // 2) Personal cloud thumbnails (GitHub repo fed by TorBox).
+        val cloudRepo = PlayerSettingsStorage.loadThumbsRepo().orEmpty().trim().trim('/')
+        val cloudToken = PlayerSettingsStorage.loadThumbsToken().orEmpty().trim()
+        val cloudKey = content?.let { CloudThumbsClient.keyFor(it) }
+        val cloudEnabled = cloudRepo.count { it == '/' } == 1 && cloudToken.isNotBlank() && cloudKey != null
+        var cloudNote: String? = null
+        var cloudPending = false
+        if (cloudEnabled) {
+            track = SeekPreviewLookingUp
+            when (val result = CloudThumbsClient.lookup(cloudRepo, cloudToken, cloudKey!!, durationMs)) {
+                is CloudThumbsClient.Lookup.Ready -> {
+                    seekPreviewLog("cloud track ready for $cloudKey")
+                    track = result.track
+                    warm(result.track)
+                    return@LaunchedEffect
+                }
+                is CloudThumbsClient.Lookup.Missing -> {
+                    val directUrl = sourceUrl?.takeIf { !isP2p && (it.startsWith("http://") || it.startsWith("https://")) }
+                    cloudPending = CloudThumbsClient.requestGeneration(
+                        cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
+                    )
+                    cloudNote = if (cloudPending) "cloud: generating" else "cloud: couldn't start"
+                }
+                is CloudThumbsClient.Lookup.Failed -> {
+                    cloudNote = "cloud: ${result.reason}"
+                    seekPreviewLog("cloud failed earlier: ${result.reason}")
+                }
+                is CloudThumbsClient.Lookup.Error -> {
+                    cloudNote = "cloud: ${result.message}"
+                    seekPreviewLog("cloud error: ${result.message}")
+                }
+            }
+        }
+
+        // 3) On-device previews while the cloud works (or if it can't help).
         val seekrNote = when {
             apiKey.isBlank() -> "no Seekr key"
             content == null -> "no IMDb/TMDB id for Seekr"
             else -> "Seekr has none"
         }
-        if (!PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) {
-            seekPreviewLog("local fallback disabled in settings")
-            track = SeekPreviewUnavailable("$seekrNote · on-device previews off")
-            return@LaunchedEffect
+        var local: LocalPreviewTrack? = null
+        val localReason = when {
+            !PlayerSettingsStorage.loadLocalSeekPreviewEnabled() -> "on-device previews off"
+            else -> LocalPreviewTrack.ineligibleReason(sourceUrl, streamType, isP2p)
         }
-        LocalPreviewTrack.ineligibleReason(sourceUrl, streamType, isP2p)?.let { reason ->
-            track = SeekPreviewUnavailable("$seekrNote · $reason")
-            return@LaunchedEffect
+        if (localReason == null) {
+            val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
+            val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
+            local = LocalPreviewTrack(
+                grabber = PreviewFrameGrabber(sourceUrl!!, headers),
+                durationMs = durationMs,
+                cacheKey = cacheKey,
+                backgroundPassEnabled = { !wifiOnly || isOnUnmeteredNetwork() },
+                playerBusy = { busy },
+            )
+            local.note = cloudNote
+            seekPreviewLog("local track started key=$cacheKey interval=${local.intervalMs}ms")
+            local.start(scope)
+            track = local
+        } else {
+            track = SeekPreviewUnavailable(listOfNotNull(seekrNote, cloudNote, localReason).joinToString(" · "))
         }
-        val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
-        val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
-        val local = LocalPreviewTrack(
-            grabber = PreviewFrameGrabber(sourceUrl!!, headers),
-            durationMs = durationMs,
-            cacheKey = cacheKey,
-            backgroundPassEnabled = { !wifiOnly || isOnUnmeteredNetwork() },
-            playerBusy = { busy },
-        )
-        seekPreviewLog("local track started key=$cacheKey interval=${local.intervalMs}ms")
-        local.start(scope)
-        track = local
+
         try {
+            // Swap to cloud thumbnails as soon as the workflow commits them.
+            if (cloudPending) {
+                val deadline = kotlin.time.TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("10m")
+                while (deadline.hasNotPassedNow()) {
+                    kotlinx.coroutines.delay(20_000)
+                    when (val result = CloudThumbsClient.lookup(cloudRepo, cloudToken, cloudKey!!, durationMs)) {
+                        is CloudThumbsClient.Lookup.Ready -> {
+                            seekPreviewLog("cloud track arrived for $cloudKey")
+                            local?.close()
+                            local = null
+                            track = result.track
+                            warm(result.track)
+                            break
+                        }
+                        is CloudThumbsClient.Lookup.Failed -> {
+                            local?.note = "cloud: ${result.reason}"
+                            break
+                        }
+                        else -> Unit
+                    }
+                }
+            }
             awaitCancellation()
         } finally {
-            local.close()
+            local?.close()
         }
     }
     return track
@@ -197,12 +263,15 @@ internal fun SeekPreviewThumbnail(
     cue: SeekPreviewCue,
     timeLabel: String,
     modifier: Modifier = Modifier,
+    headers: Map<String, String> = emptyMap(),
+    badge: String = "SEEKR",
 ) {
     val context = LocalPlatformContext.current
-    val request = remember(cue.sheetUrl, context) {
+    val request = remember(cue.sheetUrl, context, headers) {
         ImageRequest.Builder(context)
             .data(cue.sheetUrl)
             .size(coil3.size.Size.ORIGINAL)
+            .withHeaders(headers)
             .build()
     }
     val painter = rememberAsyncImagePainter(request)
@@ -233,7 +302,7 @@ internal fun SeekPreviewThumbnail(
                     }
                 },
         )
-        SourceBadge("SEEKR", Modifier.align(Alignment.TopStart))
+        SourceBadge(badge, Modifier.align(Alignment.TopStart))
         }
         PreviewCaption(timeLabel = timeLabel, status = null)
     }
@@ -276,7 +345,13 @@ internal fun SeekPreviewHost(
             is SeekPreviewTrack -> {
                 val cue = if (showing) track.cueAt(positionMs) else null
                 if (cue != null) {
-                    SeekPreviewThumbnail(cue = cue, timeLabel = timeLabel(positionMs), modifier = placement)
+                    SeekPreviewThumbnail(
+                        cue = cue,
+                        timeLabel = timeLabel(positionMs),
+                        modifier = placement,
+                        headers = track.requestHeaders,
+                        badge = track.sourceLabel,
+                    )
                 }
             }
             is LocalPreviewTrack -> if (showing) {
@@ -288,7 +363,7 @@ internal fun SeekPreviewHost(
                     track.failed -> "${track.readyCount}/${track.totalCount} ready · stopped"
                     frame == null -> "generating…"
                     else -> "${track.readyCount}/${track.totalCount} ready"
-                }
+                }.let { base -> track.note?.let { "$base · $it" } ?: base }
                 LocalPreviewThumbnail(
                     frame = frame,
                     timeLabel = timeLabel(positionMs),
@@ -341,4 +416,13 @@ internal fun LocalPreviewThumbnail(
         }
         PreviewCaption(timeLabel = timeLabel, status = status)
     }
+}
+
+/** Adds request headers (e.g. a private repo token) when there are any. */
+internal fun ImageRequest.Builder.withHeaders(headers: Map<String, String>): ImageRequest.Builder {
+    if (headers.isEmpty()) return this
+    val built = coil3.network.NetworkHeaders.Builder().apply {
+        headers.forEach { (k, v) -> set(k, v) }
+    }.build()
+    return httpHeaders(built)
 }

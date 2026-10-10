@@ -16,7 +16,24 @@ internal class SeekPreviewTrack(
     val cues: List<SeekPreviewCue>,
     /** Client duration / source duration, as returned by Seekr. */
     val scale: Double,
+    /** Runtime of the release the sprites were made from (cloud thumbnails), else 0. */
+    val sourceDurationMs: Long = 0L,
+    /** Extra headers for fetching sprite sheets (e.g. a private repo token). */
+    val requestHeaders: Map<String, String> = emptyMap(),
+    /** Badge shown on the thumbnail. */
+    val sourceLabel: String = "SEEKR",
 ) : SeekPreviewSource {
+    /** Same sprites, timed for a release of [clientDurationMs] (cloud thumbnails). */
+    fun rescaled(clientDurationMs: Long): SeekPreviewTrack =
+        if (sourceDurationMs <= 0L || clientDurationMs <= 0L) this
+        else SeekPreviewTrack(
+            cues = cues,
+            scale = clientDurationMs.toDouble() / sourceDurationMs.toDouble(),
+            sourceDurationMs = sourceDurationMs,
+            requestHeaders = requestHeaders,
+            sourceLabel = sourceLabel,
+        )
+
     val sheetUrls: List<String> = cues.map { it.sheetUrl }.distinct()
 
     /** Cue for a playback position in the video being played, or null. */

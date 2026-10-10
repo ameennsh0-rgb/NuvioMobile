@@ -37,6 +37,8 @@ actual object PlayerSettingsStorage {
     private const val seekrApiKeyKey = "seekr_api_key"
     private const val localSeekPreviewEnabledKey = "local_seek_preview_enabled"
     private const val localSeekPreviewWifiOnlyKey = "local_seek_preview_wifi_only"
+    private const val thumbsRepoKey = "cloud_thumbs_repo"
+    private const val thumbsTokenKey = "cloud_thumbs_token"
     private const val preferredAudioLanguageKey = "preferred_audio_language"
     private const val secondaryPreferredAudioLanguageKey = "secondary_preferred_audio_language"
     private const val preferredSubtitleLanguageKey = "preferred_subtitle_language"
@@ -428,6 +430,26 @@ actual object PlayerSettingsStorage {
 
     actual fun saveLocalSeekPreviewWifiOnly(enabled: Boolean) {
         preferences?.edit()?.putBoolean(ProfileScopedKey.of(localSeekPreviewWifiOnlyKey), enabled)?.apply()
+    }
+
+    actual fun loadThumbsRepo(): String? =
+        preferences?.getString(ProfileScopedKey.of(thumbsRepoKey), null)
+
+    actual fun saveThumbsRepo(repo: String?) {
+        preferences?.edit()?.apply {
+            val key = ProfileScopedKey.of(thumbsRepoKey)
+            if (repo.isNullOrBlank()) remove(key) else putString(key, repo.trim())
+        }?.apply()
+    }
+
+    actual fun loadThumbsToken(): String? =
+        preferences?.getString(ProfileScopedKey.of(thumbsTokenKey), null)
+
+    actual fun saveThumbsToken(token: String?) {
+        preferences?.edit()?.apply {
+            val key = ProfileScopedKey.of(thumbsTokenKey)
+            if (token.isNullOrBlank()) remove(key) else putString(key, token.trim())
+        }?.apply()
     }
 
     actual fun loadExternalPlayerId(): String? =

@@ -394,6 +394,14 @@ actual object PlayerSettingsStorage {
 
     actual fun saveLocalSeekPreviewWifiOnly(enabled: Boolean) {}
 
+    actual fun loadThumbsRepo(): String? = null
+
+    actual fun saveThumbsRepo(repo: String?) {}
+
+    actual fun loadThumbsToken(): String? = null
+
+    actual fun saveThumbsToken(token: String?) {}
+
     actual fun loadExternalPlayerId(): String? {
         val defaults = NSUserDefaults.standardUserDefaults
         val key = ProfileScopedKey.of(externalPlayerIdKey)
