@@ -47,7 +47,7 @@ internal fun SeekrSettingsSection(isTablet: Boolean) {
                 )
                 val syncHost = SupabaseConfig.URL.substringAfter("://").substringBefore('/')
                 Text(
-                    text = "Build: seekr-4 (local fallback + status) · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
+                    text = "Build: seekr-5 (mpv thumbnails) · Sync server: " + syncHost.ifBlank { "NOT CONFIGURED" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
