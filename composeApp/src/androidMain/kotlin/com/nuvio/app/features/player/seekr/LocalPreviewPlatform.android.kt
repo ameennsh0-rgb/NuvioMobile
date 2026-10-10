@@ -27,10 +27,8 @@ private const val THUMB_WIDTH = 320
 private const val THUMB_HEIGHT = 180
 
 /**
- * Decodes thumbnails with a hidden, software-only mpv instance (FFmpeg), so it works for
- * HEVC / 10-bit files the device's hardware decoders can't hand to MediaMetadataRetriever,
- * and never competes with the player for the hardware decoder.
- * Falls back to MediaMetadataRetriever only if mpv can't start.
+ * Decodes thumbnails with Android's MediaMetadataRetriever; if the device can't decode the
+ * file at all, tries a hidden software mpv instance, rejecting blank frames.
  */
 internal actual class PreviewFrameGrabber actual constructor(
     private val url: String,
@@ -45,29 +43,43 @@ internal actual class PreviewFrameGrabber actual constructor(
     private var retriever: MediaMetadataRetriever? = null
     private var retrieverFailed = false
 
+    private var retrieverMisses = 0
+    private var retrieverSucceeded = false
+
     actual suspend fun grab(positionMs: Long): ImageBitmap? = withContext(Dispatchers.IO) {
         lock.withLock {
             if (closed) return@withLock null
-            if (!mpvFailed) {
-                val mpv = mpvGrabber ?: openMpv()
-                if (mpv != null) {
-                    val frame = mpv.grab(positionMs)
-                    if (frame != null) {
-                        mpvSucceeded = true
-                        return@withLock shrink(frame).asImageBitmap()
-                    }
-                    // mpv never produced a frame for this stream: try the Android extractor instead.
-                    if (!mpvSucceeded && ++mpvMisses >= 2) {
-                        seekPreviewLog("mpv produced no frames; switching to Android extractor")
-                        mpv.close()
-                        mpvGrabber = null
-                        mpvFailed = true
-                    } else {
-                        return@withLock null
-                    }
+            // 1) Android's extractor: slower, but reliable wherever the device can decode the file.
+            if (!retrieverFailed) {
+                val frame = grabWithRetriever(positionMs)
+                if (frame != null) {
+                    retrieverSucceeded = true
+                    return@withLock frame
+                }
+                if (!retrieverSucceeded && ++retrieverMisses >= 2) {
+                    seekPreviewLog("Android extractor can't decode this file; trying mpv")
+                    retrieverFailed = true
+                    try { retriever?.release() } catch (_: Throwable) {}
+                    retriever = null
+                } else {
+                    return@withLock null
                 }
             }
-            grabWithRetriever(positionMs)
+            // 2) Software mpv, only when the device's decoders can't handle the file.
+            if (mpvFailed) return@withLock null
+            val mpv = mpvGrabber ?: openMpv() ?: return@withLock null
+            val frame = mpv.grab(positionMs)
+            if (frame != null && !frame.isBlank()) {
+                mpvSucceeded = true
+                return@withLock shrink(frame).asImageBitmap()
+            }
+            if (!mpvSucceeded && ++mpvMisses >= 3) {
+                seekPreviewLog("mpv returns blank frames here; giving up on it")
+                mpv.close()
+                mpvGrabber = null
+                mpvFailed = true
+            }
+            null
         }
     }
 
@@ -105,6 +117,8 @@ internal actual class PreviewFrameGrabber actual constructor(
         } catch (t: Throwable) {
             seekPreviewLog("setDataSource failed: $t")
             retrieverFailed = true
+            retrieverSucceeded = false
+            retrieverMisses = 2
             return null
         }
         val timeUs = positionMs * 1000L
@@ -278,6 +292,25 @@ private class MpvThumbnailer(
         const val OPEN_TIMEOUT_MS = 20_000L
         const val SEEK_TIMEOUT_MS = 15_000L
     }
+}
+
+/** True for an all-black (or nearly) frame: a decode that produced no picture. */
+private fun Bitmap.isBlank(): Boolean {
+    val stepX = (width / 16).coerceAtLeast(1)
+    val stepY = (height / 9).coerceAtLeast(1)
+    var max = 0
+    var y = stepY / 2
+    while (y < height) {
+        var x = stepX / 2
+        while (x < width) {
+            val p = getPixel(x, y)
+            max = maxOf(max, (p shr 16) and 0xFF, (p shr 8) and 0xFF, p and 0xFF)
+            if (max > 24) return false
+            x += stepX
+        }
+        y += stepY
+    }
+    return true
 }
 
 /** Fit inside the thumbnail box and use 16-bit colour to halve memory. */

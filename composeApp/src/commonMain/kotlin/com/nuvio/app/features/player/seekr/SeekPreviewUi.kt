@@ -144,8 +144,18 @@ internal fun rememberSeekPreviewTrack(
                     cloudNote = if (cloudPending) "cloud: generating" else "cloud: couldn't start"
                 }
                 is CloudThumbsClient.Lookup.Failed -> {
-                    cloudNote = "cloud: ${result.reason}"
                     seekPreviewLog("cloud failed earlier: ${result.reason}")
+                    val ageSec = kotlin.time.Clock.System.now().epochSeconds - result.atEpochSec
+                    if (ageSec > 6 * 3600) {
+                        // Old failure: TorBox cache or the generator may have changed since; try again.
+                        val directUrl = sourceUrl?.takeIf { !isP2p && (it.startsWith("http://") || it.startsWith("https://")) }
+                        cloudPending = CloudThumbsClient.requestGeneration(
+                            cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
+                        )
+                        cloudNote = if (cloudPending) "cloud: retrying" else "cloud: ${result.reason}"
+                    } else {
+                        cloudNote = "cloud: ${result.reason}"
+                    }
                 }
                 is CloudThumbsClient.Lookup.Error -> {
                     cloudNote = "cloud: ${result.message}"

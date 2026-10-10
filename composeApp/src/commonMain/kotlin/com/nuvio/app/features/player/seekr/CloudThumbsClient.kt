@@ -29,7 +29,8 @@ internal object CloudThumbsClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val http: HttpClient by lazy { createMdbListHttpClient() }
     private val ready = mutableMapOf<String, SeekPreviewTrack>()
-    private val triggered = mutableSetOf<String>()
+    private val triggeredAt = mutableMapOf<String, Long>()
+    private const val RETRIGGER_AFTER_MS = 10L * 60L * 1000L
 
     sealed interface Lookup {
         data class Ready(val track: SeekPreviewTrack) : Lookup
@@ -106,7 +107,10 @@ internal object CloudThumbsClient {
         clientDurationMs: Long,
         fallbackUrl: String?,
     ): Boolean {
-        if (!triggered.add("$repo|$key")) return true
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val last = triggeredAt["$repo|$key"]
+        if (last != null && now - last < RETRIGGER_AFTER_MS) return true
+        triggeredAt["$repo|$key"] = now
         val contentId = contentIdFor(content) ?: return false
         val body = buildJsonObject {
             put("event_type", "generate")
@@ -131,13 +135,13 @@ internal object CloudThumbsClient {
                 setBody(body.toString())
             }
             val ok = response.status.value == 204
-            if (!ok) triggered.remove("$repo|$key")
+            if (!ok) triggeredAt.remove("$repo|$key")
             seekPreviewLog("cloud dispatch $key -> HTTP ${response.status.value}")
             ok
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            triggered.remove("$repo|$key")
+            triggeredAt.remove("$repo|$key")
             seekPreviewLog("cloud dispatch failed: $t")
             false
         }
