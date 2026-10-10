@@ -141,7 +141,7 @@ internal fun rememberSeekPreviewTrack(
                     cloudPending = CloudThumbsClient.requestGeneration(
                         cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
                     )
-                    cloudNote = if (cloudPending) "cloud: generating" else "cloud: couldn't start"
+                    cloudNote = if (cloudPending) "cloud: queued" else "cloud: couldn't start"
                 }
                 is CloudThumbsClient.Lookup.Failed -> {
                     seekPreviewLog("cloud failed earlier: ${result.reason}")
@@ -152,7 +152,7 @@ internal fun rememberSeekPreviewTrack(
                         cloudPending = CloudThumbsClient.requestGeneration(
                             cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
                         )
-                        cloudNote = if (cloudPending) "cloud: retrying" else "cloud: ${result.reason}"
+                        cloudNote = if (cloudPending) "cloud: queued" else "cloud: ${result.reason}"
                     } else {
                         cloudNote = "cloud: ${result.reason}"
                     }
@@ -196,9 +196,19 @@ internal fun rememberSeekPreviewTrack(
         try {
             // Swap to cloud thumbnails as soon as the workflow commits them.
             if (cloudPending) {
-                val deadline = kotlin.time.TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("10m")
+                val deadline = kotlin.time.TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("30m")
+                val baseReason = (track as? SeekPreviewUnavailable)?.reason
                 while (deadline.hasNotPassedNow()) {
-                    kotlinx.coroutines.delay(20_000)
+                    kotlinx.coroutines.delay(15_000)
+                    CloudThumbsClient.progress(cloudRepo, cloudToken, cloudKey!!)
+                        ?.takeIf { it.stage != "failed" }
+                        ?.let { p ->
+                            val label = "cloud: ${p.label()}"
+                            local?.note = label
+                            if (local == null && baseReason != null) {
+                                track = SeekPreviewUnavailable("$baseReason · $label")
+                            }
+                        }
                     when (val result = CloudThumbsClient.lookup(cloudRepo, cloudToken, cloudKey!!, durationMs)) {
                         is CloudThumbsClient.Lookup.Ready -> {
                             seekPreviewLog("cloud track arrived for $cloudKey")
@@ -369,10 +379,10 @@ internal fun SeekPreviewHost(
                 LaunchedEffect(track, bucket) { track.request(positionMs) }
                 val frame = track.frameNear(positionMs)
                 val status = when {
-                    track.failed && frame == null -> "can't read this stream"
-                    track.failed -> "${track.readyCount}/${track.totalCount} ready · stopped"
-                    frame == null -> "generating…"
-                    else -> "${track.readyCount}/${track.totalCount} ready"
+                    track.failed && frame == null -> "on-device: can't read this stream"
+                    track.failed -> "on-device ${track.readyCount}/${track.totalCount} · stopped"
+                    frame == null -> "on-device: grabbing…"
+                    else -> "on-device ${track.readyCount}/${track.totalCount}"
                 }.let { base -> track.note?.let { "$base · $it" } ?: base }
                 LocalPreviewThumbnail(
                     frame = frame,

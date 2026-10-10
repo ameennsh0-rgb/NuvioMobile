@@ -43,6 +43,26 @@ internal object CloudThumbsClient {
     private data class Meta(@SerialName("source_duration_ms") val sourceDurationMs: Long = 0L)
 
     @Serializable
+    data class Progress(val stage: String = "", val done: Int = 0, val total: Int = 0, val at: Long = 0L) {
+        /** Short label, e.g. "extracting 120/292". */
+        fun label(): String = if (total > 0) "$stage $done/$total" else stage
+    }
+
+    /** Live progress the generator publishes on the repo's "progress" branch, or null. */
+    suspend fun progress(repo: String, token: String, key: String): Progress? = try {
+        val name = key.replace('/', '_') + ".json"
+        val response = http.get("$API/repos/$repo/contents/$name?ref=progress") {
+            githubHeaders(token)
+            header("Accept", "application/vnd.github.raw+json")
+        }
+        if (response.status.value == 200) json.decodeFromString(Progress.serializer(), response.bodyAsText()) else null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Throwable) {
+        null
+    }
+
+    @Serializable
     private data class FailedMarker(val reason: String = "", val at: Long = 0L)
 
     /** Folder for a title inside the repo, matching scripts/generate.py. */
