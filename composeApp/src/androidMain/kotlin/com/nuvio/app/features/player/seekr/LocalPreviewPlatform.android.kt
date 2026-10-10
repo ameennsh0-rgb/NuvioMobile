@@ -42,7 +42,8 @@ internal actual class PreviewFrameGrabber actual constructor(
                 } else {
                     r.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                seekPreviewLog("getFrameAtTime threw: $t")
                 null
             } ?: return@withLock null
             shrink(raw).asImageBitmap()
@@ -54,7 +55,8 @@ internal actual class PreviewFrameGrabber actual constructor(
             it.setDataSource(url, headers)
             retriever = it
         }
-    } catch (_: Throwable) {
+    } catch (t: Throwable) {
+        seekPreviewLog("setDataSource failed: $t")
         openFailed = true
         null
     }
@@ -141,4 +143,8 @@ internal actual fun isOnUnmeteredNetwork(): Boolean {
     } catch (_: Throwable) {
         false
     }
+}
+
+internal actual fun seekPreviewLog(message: String) {
+    android.util.Log.i("SeekPreview", message)
 }

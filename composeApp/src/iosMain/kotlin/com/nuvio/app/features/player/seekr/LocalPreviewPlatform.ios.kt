@@ -17,3 +17,5 @@ internal actual object PreviewFrameCache {
 internal actual fun isLocalSeekPreviewSupported(): Boolean = false
 
 internal actual fun isOnUnmeteredNetwork(): Boolean = false
+
+internal actual fun seekPreviewLog(message: String) {}

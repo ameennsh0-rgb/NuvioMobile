@@ -88,11 +88,13 @@ internal fun rememberSeekPreviewTrack(
     LaunchedEffect(apiKey, contentId, contentType, season, episode, durationSec, sourceUrl) {
         if (durationSec <= 0L) return@LaunchedEffect
         val content = seekrContentFor(contentId, contentType, season, episode)
+        seekPreviewLog("start id=$contentId type=$contentType s=$season e=$episode dur=${durationSec}s seekrKey=${apiKey.isNotBlank()}")
         val seekr = if (apiKey.isNotBlank() && content != null) {
             SeekrClient.loadTrack(apiKey, content, durationMs)
         } else {
             null
         }
+        seekPreviewLog("seekr track=${seekr != null}")
         if (seekr != null) {
             track = seekr
             // Warm the disk cache so scrubbing is instant; keep them out of memory until needed.
@@ -110,7 +112,10 @@ internal fun rememberSeekPreviewTrack(
         }
 
         // Fallback: Seekr doesn't know this title (common for regional films).
-        if (!PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) return@LaunchedEffect
+        if (!PlayerSettingsStorage.loadLocalSeekPreviewEnabled()) {
+            seekPreviewLog("local fallback disabled in settings")
+            return@LaunchedEffect
+        }
         if (!LocalPreviewTrack.isEligible(sourceUrl, streamType, isP2p)) return@LaunchedEffect
         val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
         val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
@@ -121,6 +126,7 @@ internal fun rememberSeekPreviewTrack(
             backgroundPassEnabled = { !wifiOnly || isOnUnmeteredNetwork() },
             playerBusy = { busy },
         )
+        seekPreviewLog("local track started key=$cacheKey interval=${local.intervalMs}ms")
         local.start(scope)
         track = local
         try {

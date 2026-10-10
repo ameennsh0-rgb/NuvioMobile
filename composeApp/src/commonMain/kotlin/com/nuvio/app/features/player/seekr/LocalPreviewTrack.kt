@@ -135,12 +135,17 @@ internal class LocalPreviewTrack(
             null
         }
         if (frame == null) {
+            seekPreviewLog("grab failed bucket=$bucket at ${positionMs}ms (failures=${consecutiveFailures + 1})")
             missing += bucket
             // Unsupported codec / dead link: stop spending data on it.
-            if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) gaveUp = true
+            if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                gaveUp = true
+                seekPreviewLog("giving up on this stream")
+            }
             return
         }
         consecutiveFailures = 0
+        seekPreviewLog("grabbed bucket=$bucket at ${positionMs}ms")
         put(bucket, frame)
         PreviewFrameCache.save(diskKey, bucket, frame)
     }
@@ -165,6 +170,12 @@ internal class LocalPreviewTrack(
 
         /** Streams the platform frame grabber can read directly (no HLS/DASH, no torrents). */
         fun isEligible(url: String?, streamType: String?, isP2p: Boolean): Boolean {
+            val ok = checkEligible(url, streamType, isP2p)
+            seekPreviewLog("eligible=$ok p2p=$isP2p type=$streamType url=${url?.substringBefore('?')?.take(120)}")
+            return ok
+        }
+
+        private fun checkEligible(url: String?, streamType: String?, isP2p: Boolean): Boolean {
             if (url.isNullOrBlank() || isP2p) return false
             if (!url.startsWith("http://") && !url.startsWith("https://")) return false
             val lowerUrl = url.lowercase().substringBefore('?')
@@ -192,3 +203,6 @@ internal expect fun isLocalSeekPreviewSupported(): Boolean
 
 /** True on Wi-Fi/Ethernet and other unmetered connections. */
 internal expect fun isOnUnmeteredNetwork(): Boolean
+
+/** Diagnostic logging for seek previews (logcat tag "SeekPreview" on Android). */
+internal expect fun seekPreviewLog(message: String)
