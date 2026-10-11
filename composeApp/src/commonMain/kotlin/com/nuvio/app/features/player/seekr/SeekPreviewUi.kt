@@ -309,6 +309,10 @@ internal fun SeekPreviewThumbnail(
             attempt++
         }
     }
+    // After retries, say why on screen instead of showing an empty box.
+    val failure = (state as? AsyncImagePainter.State.Error)?.takeIf { attempt >= 3 }?.result?.throwable
+        ?.let { t -> "image failed: " + (t.message ?: t::class.simpleName ?: "error").take(60) }
+    val loading = state is AsyncImagePainter.State.Loading || state is AsyncImagePainter.State.Empty
     val shape = RoundedCornerShape(8.dp)
 
     Column(
@@ -337,7 +341,7 @@ internal fun SeekPreviewThumbnail(
         )
         SourceBadge(badge, Modifier.align(Alignment.TopStart))
         }
-        PreviewCaption(timeLabel = timeLabel, status = null)
+        PreviewCaption(timeLabel = timeLabel, status = failure ?: if (loading) "loading…" else null)
     }
 }
 

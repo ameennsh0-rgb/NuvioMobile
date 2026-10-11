@@ -24,7 +24,6 @@ import kotlinx.serialization.json.putJsonObject
  */
 internal object CloudThumbsClient {
     private const val API = "https://api.github.com"
-    private const val RAW = "https://raw.githubusercontent.com"
 
     private val json = Json { ignoreUnknownKeys = true }
     private val http: HttpClient by lazy { createMdbListHttpClient() }
@@ -86,17 +85,23 @@ internal object CloudThumbsClient {
                     val meta = json.decodeFromString(Meta.serializer(), metaResponse.bodyAsText())
                     val vttResponse = getRaw(repo, token, "thumbs/$key/index.vtt")
                     if (vttResponse.status.value != 200) return Lookup.Error("index missing")
-                    // Pin to the exact commit: raw.githubusercontent.com caches "HEAD" for minutes,
-                    // so right after a job commits, HEAD URLs can still 404 (blank thumbnails).
+                    // Load sprites through the same authenticated API path as meta.json/index.vtt
+                    // (which demonstrably works), pinned to the exact commit so nothing is stale.
                     val ref = latestCommit(repo, token) ?: "HEAD"
-                    val baseUrl = "$RAW/$repo/$ref/thumbs/$key/index.vtt"
+                    val baseUrl = "$API/repos/$repo/contents/thumbs/$key/index.vtt"
                     val cues = SeekrVttParser.parse(vttResponse.bodyAsText(), baseUrl)
+                        .map { it.copy(sheetUrl = it.sheetUrl + "?ref=" + ref) }
                     if (cues.isEmpty() || meta.sourceDurationMs <= 0L) return Lookup.Error("empty index")
                     val track = SeekPreviewTrack(
                         cues = cues,
                         scale = 1.0,
                         sourceDurationMs = meta.sourceDurationMs,
-                        requestHeaders = mapOf("Authorization" to "Bearer $token"),
+                        requestHeaders = mapOf(
+                            "Authorization" to "Bearer $token",
+                            "Accept" to "application/vnd.github.raw+json",
+                            "X-GitHub-Api-Version" to "2022-11-28",
+                            "User-Agent" to "nuvio-fork",
+                        ),
                         sourceLabel = "CLOUD",
                     )
                     ready["$repo|$key"] = track
