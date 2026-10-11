@@ -128,7 +128,7 @@ internal object CloudThumbsClient {
         key: String,
         content: SeekrContent,
         clientDurationMs: Long,
-        fallbackUrl: String?,
+        candidates: List<Candidate>,
     ): Boolean {
         val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
         val last = triggeredAt["$repo|$key"]
@@ -148,7 +148,9 @@ internal object CloudThumbsClient {
                 }
                 put("content_id", contentId)
                 put("duration_ms", clientDurationMs.toString())
-                if (!fallbackUrl.isNullOrBlank()) put("fallback_url", fallbackUrl)
+                // Releases for this title from the user's own addons, smallest first. The job adds
+                // one to TorBox with its own key and requests its own link (nothing is shared).
+                put("candidates", candidatesJson(candidates))
             }
         }
         return try {
@@ -182,6 +184,49 @@ internal object CloudThumbsClient {
     } catch (_: Throwable) {
         null
     }
+
+    /** A release the cloud job can fetch: torrent hash + size (+ file index when known). */
+    data class Candidate(val hash: String, val size: Long, val fileIdx: Int?, val name: String)
+
+    /**
+     * Smallest releases from the title's stream list that have a torrent hash and a known size,
+     * preferring ones Nuvio already confirmed cached on the user's debrid service.
+     */
+    fun candidatesFrom(streams: List<com.nuvio.app.features.streams.StreamItem>): List<Candidate> {
+        val minSize = 200L * 1024 * 1024 // skip samples and extras
+        return streams.mapNotNull { stream ->
+            val hash = stream.p2pInfoHash ?: return@mapNotNull null
+            val size = stream.behaviorHints.videoSize ?: stream.debridCacheStatus?.cachedSize ?: return@mapNotNull null
+            if (size < minSize) return@mapNotNull null
+            if (stream.debridCacheStatus?.state == com.nuvio.app.features.streams.StreamDebridCacheState.NOT_CACHED) {
+                return@mapNotNull null
+            }
+            val cachedFirst = if (stream.debridCacheStatus?.state ==
+                com.nuvio.app.features.streams.StreamDebridCacheState.CACHED) 0 else 1
+            Triple(cachedFirst, size, Candidate(
+                hash = hash.lowercase(),
+                size = size,
+                fileIdx = stream.p2pFileIdx,
+                name = (stream.behaviorHints.filename ?: stream.title ?: stream.name ?: "").take(120),
+            ))
+        }
+            .distinctBy { it.third.hash }
+            .sortedWith(compareBy({ it.first }, { it.second }))
+            .take(6)
+            .map { it.third }
+    }
+
+    private fun candidatesJson(candidates: List<Candidate>): String =
+        kotlinx.serialization.json.buildJsonArray {
+            candidates.forEach { c ->
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("hash", c.hash)
+                    put("size", c.size)
+                    c.fileIdx?.let { put("file_idx", it) }
+                    put("name", c.name)
+                })
+            }
+        }.toString()
 
     private suspend fun getRaw(repo: String, token: String, path: String): HttpResponse =
         http.get("$API/repos/$repo/contents/$path") {

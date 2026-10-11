@@ -281,6 +281,11 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
         streamType = activeStreamType,
         isP2p = activeTorrentInfoHash != null,
         playerBusy = playbackSnapshot.isLoading,
+        titleStreams = {
+            val fromPicker = com.nuvio.app.features.streams.StreamsRepository.uiState.value.groups.flatMap { it.streams }
+            val fromPlayer = sourceStreamsState.groups.flatMap { it.streams }
+            (fromPicker + fromPlayer)
+        },
     )
     CompositionLocalProvider(LocalSeekPreviewTrack provides seekPreviewTrack) {
     AnimatedVisibility(

@@ -76,6 +76,7 @@ internal fun rememberSeekPreviewTrack(
     streamType: String? = null,
     isP2p: Boolean = false,
     playerBusy: Boolean = false,
+    titleStreams: () -> List<com.nuvio.app.features.streams.StreamItem> = { emptyList() },
 ): SeekPreviewSource? {
     val durationSec = durationMs / 1000L
     var track by remember(apiKey, contentId, contentType, season, episode, durationSec, sourceUrl) {
@@ -137,9 +138,8 @@ internal fun rememberSeekPreviewTrack(
                     return@LaunchedEffect
                 }
                 is CloudThumbsClient.Lookup.Missing -> {
-                    val directUrl = sourceUrl?.takeIf { !isP2p && (it.startsWith("http://") || it.startsWith("https://")) }
                     cloudPending = CloudThumbsClient.requestGeneration(
-                        cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
+                        cloudRepo, cloudToken, cloudKey, content!!, durationMs, CloudThumbsClient.candidatesFrom(titleStreams()),
                     )
                     cloudNote = if (cloudPending) "cloud: queued" else "cloud: couldn't start"
                 }
@@ -148,9 +148,8 @@ internal fun rememberSeekPreviewTrack(
                     val ageSec = kotlin.time.Clock.System.now().epochSeconds - result.atEpochSec
                     if (ageSec > 6 * 3600) {
                         // Old failure: TorBox cache or the generator may have changed since; try again.
-                        val directUrl = sourceUrl?.takeIf { !isP2p && (it.startsWith("http://") || it.startsWith("https://")) }
                         cloudPending = CloudThumbsClient.requestGeneration(
-                            cloudRepo, cloudToken, cloudKey, content!!, durationMs, directUrl,
+                            cloudRepo, cloudToken, cloudKey, content!!, durationMs, CloudThumbsClient.candidatesFrom(titleStreams()),
                         )
                         cloudNote = if (cloudPending) "cloud: queued" else "cloud: ${result.reason}"
                     } else {
