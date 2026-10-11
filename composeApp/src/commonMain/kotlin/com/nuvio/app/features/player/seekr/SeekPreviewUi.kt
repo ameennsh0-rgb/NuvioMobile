@@ -292,15 +292,24 @@ internal fun SeekPreviewThumbnail(
     badge: String = "SEEKR",
 ) {
     val context = LocalPlatformContext.current
-    val request = remember(cue.sheetUrl, context, headers) {
+    var attempt by remember(cue.sheetUrl) { mutableStateOf(0) }
+    val request = remember(cue.sheetUrl, context, headers, attempt) {
         ImageRequest.Builder(context)
             .data(cue.sheetUrl)
+            .memoryCacheKey("${cue.sheetUrl}#$attempt")
             .size(coil3.size.Size.ORIGINAL)
             .withHeaders(headers)
             .build()
     }
     val painter = rememberAsyncImagePainter(request)
     val state by painter.state.collectAsState()
+    LaunchedEffect(state, attempt) {
+        if (state is AsyncImagePainter.State.Error && attempt < 3) {
+            seekPreviewLog("sprite load failed (${(state as AsyncImagePainter.State.Error).result.throwable}); retrying")
+            kotlinx.coroutines.delay(1500L * (attempt + 1))
+            attempt++
+        }
+    }
     val shape = RoundedCornerShape(8.dp)
 
     Column(

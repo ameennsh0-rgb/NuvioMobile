@@ -86,7 +86,10 @@ internal object CloudThumbsClient {
                     val meta = json.decodeFromString(Meta.serializer(), metaResponse.bodyAsText())
                     val vttResponse = getRaw(repo, token, "thumbs/$key/index.vtt")
                     if (vttResponse.status.value != 200) return Lookup.Error("index missing")
-                    val baseUrl = "$RAW/$repo/HEAD/thumbs/$key/index.vtt"
+                    // Pin to the exact commit: raw.githubusercontent.com caches "HEAD" for minutes,
+                    // so right after a job commits, HEAD URLs can still 404 (blank thumbnails).
+                    val ref = latestCommit(repo, token) ?: "HEAD"
+                    val baseUrl = "$RAW/$repo/$ref/thumbs/$key/index.vtt"
                     val cues = SeekrVttParser.parse(vttResponse.bodyAsText(), baseUrl)
                     if (cues.isEmpty() || meta.sourceDurationMs <= 0L) return Lookup.Error("empty index")
                     val track = SeekPreviewTrack(
@@ -165,6 +168,19 @@ internal object CloudThumbsClient {
             seekPreviewLog("cloud dispatch failed: $t")
             false
         }
+    }
+
+    /** SHA of the default branch's latest commit, or null. */
+    private suspend fun latestCommit(repo: String, token: String): String? = try {
+        val response = http.get("$API/repos/$repo/commits/HEAD") {
+            githubHeaders(token)
+            header("Accept", "application/vnd.github.sha")
+        }
+        response.bodyAsText().trim().takeIf { response.status.value == 200 && it.length == 40 }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Throwable) {
+        null
     }
 
     private suspend fun getRaw(repo: String, token: String, path: String): HttpResponse =
