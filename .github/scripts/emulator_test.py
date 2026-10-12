@@ -182,7 +182,9 @@ def get_past_first_run(prefix):
             if sign_in(xml):
                 continue
             return xml
-        if any("watching" in n.lower() for n in names):
+        if {"Home", "Search", "Library"} <= set(names):
+            return xml  # home screen reached
+        if any(n.strip().lower() == "who's watching?" for n in names):
             # Profile picker: the configured profile, else the first tile.
             want = os.environ.get("NUVIO_PROFILE", "").strip().lower()
             profiles = [(l, x, y) for l, x, y in labels
