@@ -326,6 +326,20 @@ fun MetaDetailsScreen(
         displayedMeta != null &&
         displayedMeta.type.lowercase().let { it == "movie" || it == "series" || it == "show" || it == "tv" }
 
+    // Cloud seek previews: start preparing a movie as soon as its page is open for a moment.
+    LaunchedEffect(displayedMeta?.id) {
+        val meta = displayedMeta ?: return@LaunchedEffect
+        if (meta.type.lowercase() != "movie") return@LaunchedEffect
+        kotlinx.coroutines.delay(1_500)
+        val base = com.nuvio.app.features.player.seekr.seekrContentFor(meta.id, "movie", null, null)
+            ?: meta.imdbId?.let { com.nuvio.app.features.player.seekr.SeekrContent.Movie(tmdbId = null, imdbId = it) }
+            ?: return@LaunchedEffect
+        val content = if (base is com.nuvio.app.features.player.seekr.SeekrContent.Movie && base.imdbId == null && meta.imdbId != null) {
+            base.copy(imdbId = meta.imdbId)
+        } else base
+        com.nuvio.app.features.player.seekr.CloudThumbsClient.prefetch(content, "title page")
+    }
+
     LaunchedEffect(displayedMeta?.id) {
         deferredMetaWorkAllowed = false
         if (displayedMeta != null) {

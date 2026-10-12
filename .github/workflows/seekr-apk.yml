@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # publish the APK to the rolling seekr-latest release
 
 concurrency:
   group: seekr-apk-${{ github.ref }}
@@ -70,3 +70,27 @@ jobs:
           path: androidApp/build/outputs/apk/full/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish an encrypted copy (for automated testing on the owner's device)
+        # The APK embeds private build settings, so only an encrypted copy is published.
+        # It can only be decrypted with the private key that matches .github/seekr-test-pubkey.pem.
+        if: github.ref_name == 'seekr-local-fallback' && hashFiles('.github/seekr-test-pubkey.pem') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls androidApp/build/outputs/apk/full/debug/*.apk | head -1)
+          umask 077
+          openssl rand -hex 32 > k.txt
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in "$APK" -out nuvio-seekr.apk.enc -pass file:k.txt
+          openssl pkeyutl -encrypt -pubin -inkey .github/seekr-test-pubkey.pem \
+            -pkeyopt rsa_padding_mode:oaep -in k.txt -out nuvio-seekr.key.enc
+          rm -f k.txt
+          BUILD=$(grep -o 'Build: seekr-[0-9]*[^"·]*' composeApp/src/commonMain/kotlin/com/nuvio/app/features/settings/SeekrSettingsSection.kt | head -1)
+          NOTES="Encrypted test build for automated installs. $BUILD, commit ${GITHUB_SHA::7}"
+          if gh release view seekr-latest >/dev/null 2>&1; then
+            gh release upload seekr-latest nuvio-seekr.apk.enc nuvio-seekr.key.enc --clobber
+            gh release edit seekr-latest --notes "$NOTES"
+          else
+            gh release create seekr-latest nuvio-seekr.apk.enc nuvio-seekr.key.enc \
+              --title "Seekr test build (encrypted)" --notes "$NOTES" --prerelease --target "$GITHUB_SHA"
+          fi

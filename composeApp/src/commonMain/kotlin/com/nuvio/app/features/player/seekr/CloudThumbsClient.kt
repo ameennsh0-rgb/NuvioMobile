@@ -39,7 +39,10 @@ internal object CloudThumbsClient {
     }
 
     @Serializable
-    private data class Meta(@SerialName("source_duration_ms") val sourceDurationMs: Long = 0L)
+    private data class Meta(
+        @SerialName("source_duration_ms") val sourceDurationMs: Long = 0L,
+        val partial: Boolean = false,
+    )
 
     @Serializable
     data class Progress(val stage: String = "", val done: Int = 0, val total: Int = 0, val at: Long = 0L) {
@@ -103,8 +106,9 @@ internal object CloudThumbsClient {
                             "User-Agent" to "nuvio-fork",
                         ),
                         sourceLabel = "CLOUD",
+                        partial = meta.partial,
                     )
-                    ready["$repo|$key"] = track
+                    if (!meta.partial) ready["$repo|$key"] = track
                     Lookup.Ready(track.rescaled(clientDurationMs))
                 }
                 404 -> {
@@ -188,6 +192,46 @@ internal object CloudThumbsClient {
         throw e
     } catch (_: Throwable) {
         null
+    }
+
+    /**
+     * Fills in the IMDb id from TMDB when only a TMDB id is known, so the cloud job can find
+     * releases (Torrentio needs IMDb ids) and every caller uses the same thumbnail folder.
+     */
+    suspend fun resolve(content: SeekrContent): SeekrContent = try {
+        when (content) {
+            is SeekrContent.Movie -> if (content.imdbId == null && content.tmdbId != null) {
+                content.copy(imdbId = com.nuvio.app.features.tmdb.TmdbService.tmdbToImdb(content.tmdbId, "movie"))
+            } else content
+            is SeekrContent.Episode -> if (content.showImdbId == null && content.showTmdbId != null) {
+                content.copy(showImdbId = com.nuvio.app.features.tmdb.TmdbService.tmdbToImdb(content.showTmdbId, "tv"))
+            } else content
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Throwable) {
+        content
+    }
+
+    /**
+     * Asks the cloud job to prepare a title ahead of time (title page opened, next episodes).
+     * Does nothing if cloud thumbnails aren't configured, already exist, or were just requested.
+     */
+    suspend fun prefetch(content: SeekrContent, reason: String) {
+        val repo = com.nuvio.app.features.player.PlayerSettingsStorage.loadThumbsRepo().orEmpty().trim().trim('/')
+        val token = com.nuvio.app.features.player.PlayerSettingsStorage.loadThumbsToken().orEmpty().trim()
+        if (repo.count { it == '/' } != 1 || token.isBlank()) return
+        val resolved = resolve(content)
+        val key = keyFor(resolved) ?: return
+        val needed = when (val r = lookup(repo, token, key, 0L)) {
+            is Lookup.Missing -> true
+            is Lookup.Failed -> kotlin.time.Clock.System.now().epochSeconds - r.atEpochSec > 6 * 3600
+            else -> false
+        }
+        if (needed) {
+            seekPreviewLog("cloud prefetch ($reason): $key")
+            requestGeneration(repo, token, key, resolved, 0L, emptyList())
+        }
     }
 
     /** A release the cloud job can fetch: torrent hash + size (+ file index when known). */

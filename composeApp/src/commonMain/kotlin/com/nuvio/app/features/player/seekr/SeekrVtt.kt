@@ -22,6 +22,8 @@ internal class SeekPreviewTrack(
     val requestHeaders: Map<String, String> = emptyMap(),
     /** Badge shown on the thumbnail. */
     val sourceLabel: String = "SEEKR",
+    /** Rough early set (cloud): a fuller one replaces it shortly. */
+    val partial: Boolean = false,
 ) : SeekPreviewSource {
     /** Same sprites, timed for a release of [clientDurationMs] (cloud thumbnails). */
     fun rescaled(clientDurationMs: Long): SeekPreviewTrack =
@@ -32,6 +34,7 @@ internal class SeekPreviewTrack(
             sourceDurationMs = sourceDurationMs,
             requestHeaders = requestHeaders,
             sourceLabel = sourceLabel,
+            partial = partial,
         )
 
     val sheetUrls: List<String> = cues.map { it.sheetUrl }.distinct()

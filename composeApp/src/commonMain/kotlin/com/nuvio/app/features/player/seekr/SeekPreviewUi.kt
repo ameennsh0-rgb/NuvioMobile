@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import com.nuvio.app.features.player.PlayerSettingsStorage
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -89,7 +90,7 @@ internal fun rememberSeekPreviewTrack(
 
     LaunchedEffect(apiKey, contentId, contentType, season, episode, durationSec, sourceUrl) {
         if (durationSec <= 0L) return@LaunchedEffect
-        val content = seekrContentFor(contentId, contentType, season, episode)
+        val content = seekrContentFor(contentId, contentType, season, episode)?.let { CloudThumbsClient.resolve(it) }
         seekPreviewLog("start id=$contentId type=$contentType s=$season e=$episode dur=${durationSec}s seekrKey=${apiKey.isNotBlank()}")
 
         fun warm(t: SeekPreviewTrack) {
@@ -132,10 +133,11 @@ internal fun rememberSeekPreviewTrack(
             track = SeekPreviewLookingUp
             when (val result = CloudThumbsClient.lookup(cloudRepo, cloudToken, cloudKey!!, durationMs)) {
                 is CloudThumbsClient.Lookup.Ready -> {
-                    seekPreviewLog("cloud track ready for $cloudKey")
+                    seekPreviewLog("cloud track ready for $cloudKey (partial=${result.track.partial})")
                     track = result.track
                     warm(result.track)
-                    return@LaunchedEffect
+                    if (!result.track.partial) return@LaunchedEffect
+                    cloudPending = true // keep polling for the full set
                 }
                 is CloudThumbsClient.Lookup.Missing -> {
                     cloudPending = CloudThumbsClient.requestGeneration(
@@ -174,7 +176,9 @@ internal fun rememberSeekPreviewTrack(
             !PlayerSettingsStorage.loadLocalSeekPreviewEnabled() -> "on-device previews off"
             else -> LocalPreviewTrack.ineligibleReason(sourceUrl, streamType, isP2p)
         }
-        if (localReason == null) {
+        if (track is SeekPreviewTrack) {
+            // Rough cloud set already showing; nothing to generate on the device.
+        } else if (localReason == null) {
             val wifiOnly = PlayerSettingsStorage.loadLocalSeekPreviewWifiOnly()
             val cacheKey = (content?.cacheKey ?: "u:${sourceUrl!!.substringBefore('?')}") + "|$durationSec"
             local = LocalPreviewTrack(
@@ -192,13 +196,26 @@ internal fun rememberSeekPreviewTrack(
             track = SeekPreviewUnavailable(listOfNotNull(seekrNote, cloudNote, localReason).joinToString(" · "))
         }
 
+        // Series: get the next two episodes ready while this one plays.
+        if (cloudEnabled && content is SeekrContent.Episode) {
+            scope.launch {
+                kotlinx.coroutines.delay(45_000)
+                for (ahead in 1..2) {
+                    CloudThumbsClient.prefetch(content.copy(episode = content.episode + ahead), "next episode")
+                }
+            }
+        }
+
         try {
             // Swap to cloud thumbnails as soon as the workflow commits them.
             if (cloudPending) {
                 val deadline = kotlin.time.TimeSource.Monotonic.markNow() + kotlin.time.Duration.parse("30m")
                 val baseReason = (track as? SeekPreviewUnavailable)?.reason
+                val pollStarted = kotlin.time.TimeSource.Monotonic.markNow()
                 while (deadline.hasNotPassedNow()) {
-                    kotlinx.coroutines.delay(15_000)
+                    // Jobs usually finish within a minute: check often at first, then back off.
+                    val early = pollStarted.elapsedNow() < kotlin.time.Duration.parse("3m")
+                    kotlinx.coroutines.delay(if (early) 5_000 else 15_000)
                     CloudThumbsClient.progress(cloudRepo, cloudToken, cloudKey!!)
                         ?.takeIf { it.stage != "failed" }
                         ?.let { p ->
@@ -215,12 +232,14 @@ internal fun rememberSeekPreviewTrack(
                         }
                     when (val result = CloudThumbsClient.lookup(cloudRepo, cloudToken, cloudKey!!, durationMs)) {
                         is CloudThumbsClient.Lookup.Ready -> {
-                            seekPreviewLog("cloud track arrived for $cloudKey")
+                            val current = track
+                            if (result.track.partial && current is SeekPreviewTrack) continue
+                            seekPreviewLog("cloud track arrived for $cloudKey (partial=${result.track.partial})")
                             local?.close()
                             local = null
                             track = result.track
                             warm(result.track)
-                            break
+                            if (!result.track.partial) break
                         }
                         is CloudThumbsClient.Lookup.Failed -> {
                             local?.note = "cloud: ${result.reason}"
@@ -289,6 +308,7 @@ internal fun SeekPreviewThumbnail(
     modifier: Modifier = Modifier,
     headers: Map<String, String> = emptyMap(),
     badge: String = "SEEKR",
+    note: String? = null,
 ) {
     val context = LocalPlatformContext.current
     var attempt by remember(cue.sheetUrl) { mutableStateOf(0) }
@@ -341,7 +361,7 @@ internal fun SeekPreviewThumbnail(
         )
         SourceBadge(badge, Modifier.align(Alignment.TopStart))
         }
-        PreviewCaption(timeLabel = timeLabel, status = failure ?: if (loading) "loading…" else null)
+        PreviewCaption(timeLabel = timeLabel, status = failure ?: if (loading) "loading…" else note)
     }
 }
 
@@ -388,6 +408,7 @@ internal fun SeekPreviewHost(
                         modifier = placement,
                         headers = track.requestHeaders,
                         badge = track.sourceLabel,
+                        note = if (track.partial) "rough set · refining" else null,
                     )
                 }
             }
