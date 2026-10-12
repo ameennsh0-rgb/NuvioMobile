@@ -52,17 +52,51 @@ def shot(name):
 
 
 def nodes(xml):
+    """(label, x, y, attrs) for every labelled node in a uiautomator dump."""
     out = []
-    for m in re.finditer(r'<node [^>]*?(?:text="([^"]*)")?[^>]*?(?:content-desc="([^"]*)")?[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml):
-        label = m.group(1) or m.group(2) or ""
-        x1, y1, x2, y2 = map(int, m.groups()[2:])
-        if label:
+    for tag in re.findall(r"<node [^>]*>", xml):
+        attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+        label = attrs.get("text") or attrs.get("content-desc") or ""
+        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", attrs.get("bounds", ""))
+        if label and m:
+            x1, y1, x2, y2 = map(int, m.groups())
             out.append((label, (x1 + x2) // 2, (y1 + y2) // 2))
     return out
 
 
+def type_text(value):
+    """adb 'input text' with escaping for spaces and shell-special characters."""
+    escaped = value.replace("%", "%%").replace(" ", "%s")
+    escaped = escaped.replace("'", "'\\''")
+    adb("shell", f"input text '{escaped}'")
+
+
+def sign_in(xml):
+    email = os.environ.get("NUVIO_EMAIL", "").strip()
+    password = os.environ.get("NUVIO_PASSWORD", "")
+    if not email or not password:
+        note("sign-in screen shown but NUVIO_EMAIL/NUVIO_PASSWORD secrets are not set")
+        return False
+    labels = nodes(xml)
+    field = {l: (x, y) for l, x, y in labels}
+    if "Email" not in field or "Password" not in field or "Sign In" not in field:
+        note("sign-in screen layout not recognised")
+        return False
+    tap(*field["Email"]); time.sleep(1); type_text(email)
+    tap(*field["Password"]); time.sleep(1); type_text(password)
+    adb("shell", "input", "keyevent", "111")  # hide keyboard (ESCAPE)
+    time.sleep(1)
+    xml = shot("00_sign_in_filled")
+    field = {l: (x, y) for l, x, y in nodes(xml)}
+    tap(*field.get("Sign In", (0, 0)))
+    note("signed in with the test account; waiting for sync")
+    time.sleep(15)
+    return True
+
+
 def texts(xml):
     return " | ".join(dict.fromkeys(label for label, _, _ in nodes(xml)))
+
 
 
 def tap(x, y):
@@ -89,13 +123,19 @@ def get_past_first_run(prefix):
         labels = nodes(xml)
         names = [l for l, _, _ in labels]
         note(f"[{prefix} {step}] screen: {texts(xml)[:400]}")
+        if "Welcome Back" in names and "Sign In" in names:
+            if sign_in(xml):
+                continue
+            return xml
         if any("watching" in n.lower() for n in names):
-            # Profile picker: pick the first profile tile.
+            # Profile picker: the configured profile, else the first tile.
+            want = os.environ.get("NUVIO_PROFILE", "").strip().lower()
             profiles = [(l, x, y) for l, x, y in labels
                         if "watching" not in l.lower() and "manage" not in l.lower()]
-            if profiles:
-                note(f"  picking profile '{profiles[0][0]}'")
-                tap(profiles[0][1], profiles[0][2])
+            pick = next((p for p in profiles if p[0].strip().lower() == want), profiles[0] if profiles else None)
+            if pick:
+                note(f"  picking profile '{pick[0]}'")
+                tap(pick[1], pick[2])
                 continue
         hit = next(((l, x, y) for w in SKIP_WORDS for (l, x, y) in labels if l.strip().lower() == w.lower()), None)
         if hit:
@@ -183,6 +223,9 @@ def main():
 try:
     main()
 finally:
-    text = "\n".join(summary).replace(TOKEN, "***") if TOKEN else "\n".join(summary)
+    text = "\n".join(summary)
+    for secret in (TOKEN, os.environ.get("NUVIO_PASSWORD", ""), os.environ.get("NUVIO_EMAIL", "")):
+        if secret:
+            text = text.replace(secret, "***")
     with open(f"{OUT}/summary.txt", "w") as f:
         f.write(text + "\n")

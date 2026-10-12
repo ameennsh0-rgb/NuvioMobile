@@ -126,6 +126,9 @@ jobs:
         env:
           THUMBS_REPO: ${{ vars.THUMBS_REPO || 'ameennsh0-rgb/nuvio-thumbs' }}
           THUMBS_TOKEN: ${{ secrets.THUMBS_TOKEN }}
+          NUVIO_EMAIL: ${{ secrets.NUVIO_EMAIL }}
+          NUVIO_PASSWORD: ${{ secrets.NUVIO_PASSWORD }}
+          NUVIO_PROFILE: ${{ vars.NUVIO_PROFILE }}
         with:
           api-level: 34
           arch: x86_64
