@@ -107,6 +107,16 @@ def focused_label(xml):
     return ""
 
 
+def hide_keyboard():
+    """Closes the on-screen keyboard if (and only if) it is showing."""
+    for _ in range(2):
+        state = adb("shell", "dumpsys", "input_method")
+        if "mInputShown=true" not in state and "isInputViewShown=true" not in state:
+            return
+        adb("shell", "input", "keyevent", "4")  # BACK closes the keyboard first
+        time.sleep(1)
+
+
 def dump():
     adb("shell", "uiautomator", "dump", "/sdcard/ui.xml")
     return adb("shell", "cat", "/sdcard/ui.xml")
@@ -127,7 +137,7 @@ def sign_in(xml):
     # Email: tap the field, confirm it has focus, type.
     tap(*field["Email"]); time.sleep(1.5)
     type_text(email)
-    adb("shell", "input", "keyevent", "111")  # hide the keyboard so positions settle
+    hide_keyboard()  # so positions settle
     time.sleep(1.5)
 
     # Password: find the field again (layout may have moved), confirm focus before typing.
@@ -146,7 +156,7 @@ def sign_in(xml):
         note("focus is still on the email field; not typing the password")
         return False
     type_text(password)
-    adb("shell", "input", "keyevent", "111")
+    hide_keyboard()
     time.sleep(1)
     xml = dump()  # used only to find the button; not saved
     btn = next(((x, y) for l, x, y, *_ in nodes(xml) if l == "Sign In"), None)
