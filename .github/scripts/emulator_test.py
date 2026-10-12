@@ -78,6 +78,27 @@ def type_text(value):
     adb("shell", f"input text '{escaped}'")
 
 
+def texts(xml):
+    return " | ".join(dict.fromkeys(label for label, _, _ in nodes(xml)))
+
+
+def tap(x, y):
+    adb("shell", "input", "tap", str(x), str(y))
+
+
+def get_url(url):
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}",
+                                               "Accept": "application/vnd.github.raw+json",
+                                               "User-Agent": "nuvio-emulator-test"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except Exception as e:
+        return 0, str(e)
+
+
 def focused_label(xml):
     for tag in re.findall(r"<node [^>]*>", xml):
         if 'focused="true"' in tag:
