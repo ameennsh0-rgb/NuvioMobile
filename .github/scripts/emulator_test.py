@@ -78,49 +78,64 @@ def type_text(value):
     adb("shell", f"input text '{escaped}'")
 
 
+def focused_label(xml):
+    for tag in re.findall(r"<node [^>]*>", xml):
+        if 'focused="true"' in tag:
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+            return attrs.get("text") or attrs.get("content-desc") or attrs.get("class", "")
+    return ""
+
+
+def dump():
+    adb("shell", "uiautomator", "dump", "/sdcard/ui.xml")
+    return adb("shell", "cat", "/sdcard/ui.xml")
+
+
 def sign_in(xml):
+    """Signs in. Never screenshots or dumps text once the password has been typed."""
     email = os.environ.get("NUVIO_EMAIL", "").strip()
     password = os.environ.get("NUVIO_PASSWORD", "")
     if not email or not password:
         note("sign-in screen shown but NUVIO_EMAIL/NUVIO_PASSWORD secrets are not set")
         return False
-    labels = nodes(xml)
-    field = {l: (x, y) for l, x, y in labels}
-    if "Email" not in field or "Password" not in field or "Sign In" not in field:
+    field = {l: (x, y) for l, x, y, *_ in nodes(xml)}
+    if "Email" not in field or "Password" not in field:
         note("sign-in screen layout not recognised")
         return False
-    tap(*field["Email"]); time.sleep(1); type_text(email)
-    tap(*field["Password"]); time.sleep(1); type_text(password)
-    adb("shell", "input", "keyevent", "111")  # hide keyboard (ESCAPE)
+
+    # Email: tap the field, confirm it has focus, type.
+    tap(*field["Email"]); time.sleep(1.5)
+    type_text(email)
+    adb("shell", "input", "keyevent", "111")  # hide the keyboard so positions settle
+    time.sleep(1.5)
+
+    # Password: find the field again (layout may have moved), confirm focus before typing.
+    xml = dump()
+    pw = next(((x, y) for l, x, y, *_ in nodes(xml) if l == "Password"), None)
+    if not pw:
+        note("password field not found; not typing the password")
+        return False
+    tap(*pw); time.sleep(1.5)
+    xml = dump()
+    focus = focused_label(xml)
+    if "Password" not in focus and "EditText" not in focus:
+        note(f"password field didn't take focus (focus on: {focus[:30] if focus != email else 'email field'}); not typing")
+        return False
+    if focus.strip() == email:
+        note("focus is still on the email field; not typing the password")
+        return False
+    type_text(password)
+    adb("shell", "input", "keyevent", "111")
     time.sleep(1)
-    xml = shot("00_sign_in_filled")
-    field = {l: (x, y) for l, x, y in nodes(xml)}
-    tap(*field.get("Sign In", (0, 0)))
+    xml = dump()  # used only to find the button; not saved
+    btn = next(((x, y) for l, x, y, *_ in nodes(xml) if l == "Sign In"), None)
+    if not btn:
+        note("Sign In button not found after typing")
+        return False
+    tap(*btn)
     note("signed in with the test account; waiting for sync")
-    time.sleep(15)
+    time.sleep(20)
     return True
-
-
-def texts(xml):
-    return " | ".join(dict.fromkeys(label for label, _, _ in nodes(xml)))
-
-
-
-def tap(x, y):
-    adb("shell", "input", "tap", str(x), str(y))
-
-
-def get_url(url):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}",
-                                               "Accept": "application/vnd.github.raw+json",
-                                               "User-Agent": "nuvio-emulator-test"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, ""
-    except Exception as e:
-        return 0, str(e)
 
 
 def get_past_first_run(prefix):
