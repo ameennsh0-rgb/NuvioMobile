@@ -94,3 +94,58 @@ jobs:
             gh release create seekr-latest nuvio-seekr.apk.enc nuvio-seekr.key.enc \
               --title "Seekr test build (encrypted)" --notes "$NOTES" --prerelease --target "$GITHUB_SHA"
           fi
+
+  emulator-test:
+    name: Emulator smoke test (no streaming)
+    needs: build
+    if: github.ref_name == 'seekr-local-fallback'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout (test scripts + public key)
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            .github
+
+      - name: Download the APK from the build job
+        uses: actions/download-artifact@v7
+        with:
+          name: nuvio-${{ github.ref_name }}-debug-apk
+          path: apk
+
+      - name: Enable hardware acceleration for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          cp apk/*.apk app.apk
+
+      - name: Run the test on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          THUMBS_REPO: ${{ vars.THUMBS_REPO || 'ameennsh0-rgb/nuvio-thumbs' }}
+          THUMBS_TOKEN: ${{ secrets.THUMBS_TOKEN }}
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: python3 .github/scripts/emulator_test.py
+
+      - name: Publish encrypted results
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -d out ] || mkdir out
+          tar -czf results.tgz out
+          umask 077
+          openssl rand -hex 32 > k.txt
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in results.tgz -out seekr-test-results.tgz.enc -pass file:k.txt
+          openssl pkeyutl -encrypt -pubin -inkey .github/seekr-test-pubkey.pem \
+            -pkeyopt rsa_padding_mode:oaep -in k.txt -out seekr-test-results.key.enc
+          rm -f k.txt results.tgz
+          gh release upload seekr-latest seekr-test-results.tgz.enc seekr-test-results.key.enc --clobber --repo "$GITHUB_REPOSITORY"
