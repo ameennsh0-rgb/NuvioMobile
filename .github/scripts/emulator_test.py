@@ -172,6 +172,8 @@ def sign_in(xml):
 def get_past_first_run(prefix):
     for step in range(6):
         time.sleep(4)
+        if not ensure_online(f"{prefix} step {step}"):
+            return ""
         xml = shot(f"{prefix}_{step}")
         labels = nodes(xml)
         names = [l for l, _, _ in labels]
@@ -199,7 +201,24 @@ def get_past_first_run(prefix):
     return xml
 
 
+def ensure_online(where):
+    """Waits for the emulator if it dropped offline; notes it."""
+    state = adb("get-state", timeout=10).strip()
+    if state == "device":
+        return True
+    note(f"emulator {state or 'offline'} at {where}; waiting for it")
+    subprocess.run(["adb", "reconnect"], capture_output=True, timeout=30)
+    subprocess.run(["adb", "wait-for-device"], capture_output=True, timeout=180)
+    ok = adb("get-state", timeout=10).strip() == "device"
+    note(f"  emulator back: {ok}")
+    return ok
+
+
 def main():
+    # Record the whole device log on the host, so it survives an emulator crash.
+    global LOGCAT
+    LOGCAT = subprocess.Popen(["adb", "logcat", "-v", "time"], stdout=open(f"{OUT}/logcat_full.txt", "w"),
+                              stderr=subprocess.STDOUT)
     apk = next(f for f in os.listdir(".") if f.endswith(".apk"))
     note(f"install: {adb('install', '-r', apk, timeout=300).strip().splitlines()[-1]}")
     adb("logcat", "-c")
@@ -208,6 +227,7 @@ def main():
     adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
     time.sleep(15)
     get_past_first_run("01_first_run")
+    ensure_online("after sign-in")
     adb("shell", "am", "force-stop", PKG)
 
     if REPO and TOKEN:
@@ -273,9 +293,15 @@ def main():
         f.write(adb("logcat", "-d", f"--pid={pid}") if pid else "(app not running)")
 
 
+LOGCAT = None
 try:
     main()
+except Exception as e:
+    import traceback
+    note("test script error: " + "".join(traceback.format_exception_only(type(e), e)).strip())
 finally:
+    if LOGCAT:
+        LOGCAT.terminate()
     text = "\n".join(summary)
     for secret in (TOKEN, os.environ.get("NUVIO_PASSWORD", ""), os.environ.get("NUVIO_EMAIL", "")):
         if secret:

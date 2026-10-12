@@ -132,15 +132,18 @@ jobs:
           umask 077
           python3 -c 'import json, os; keys = ["THUMBS_REPO", "THUMBS_TOKEN", "NUVIO_EMAIL", "NUVIO_PASSWORD", "NUVIO_PROFILE"]; json.dump({k: os.environ.get(k, "") for k in keys}, open(".test-env.json", "w")); print({k: bool(os.environ.get(k)) for k in keys})'
 
-      - name: Run the test on an Android 14 emulator
+      - name: Run the test on an Android 13 emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 33
           arch: x86_64
           target: google_apis
-          ram-size: 4096M
+          ram-size: 6144M
+          heap-size: 576M
+          disk-size: 6000M
+          cores: 4
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           script: python3 .github/scripts/emulator_test.py
 
       - name: Remove test settings
