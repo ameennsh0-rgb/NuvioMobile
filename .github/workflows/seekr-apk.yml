@@ -121,14 +121,19 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           cp apk/*.apk app.apk
 
-      - name: Run the test on an Android 14 emulator
-        uses: reactivecircus/android-emulator-runner@v2
+      - name: Prepare test settings (private file, removed after the run)
         env:
           THUMBS_REPO: ${{ vars.THUMBS_REPO || 'ameennsh0-rgb/nuvio-thumbs' }}
           THUMBS_TOKEN: ${{ secrets.THUMBS_TOKEN }}
           NUVIO_EMAIL: ${{ secrets.NUVIO_EMAIL }}
           NUVIO_PASSWORD: ${{ secrets.NUVIO_PASSWORD }}
           NUVIO_PROFILE: ${{ vars.NUVIO_PROFILE }}
+        run: |
+          umask 077
+          python3 -c 'import json, os; keys = ["THUMBS_REPO", "THUMBS_TOKEN", "NUVIO_EMAIL", "NUVIO_PASSWORD", "NUVIO_PROFILE"]; json.dump({k: os.environ.get(k, "") for k in keys}, open(".test-env.json", "w")); print({k: bool(os.environ.get(k)) for k in keys})'
+
+      - name: Run the test on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           arch: x86_64
@@ -137,6 +142,10 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: python3 .github/scripts/emulator_test.py
+
+      - name: Remove test settings
+        if: always()
+        run: rm -f .test-env.json
 
       - name: Publish encrypted results
         if: always()

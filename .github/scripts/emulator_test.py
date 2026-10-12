@@ -15,6 +15,13 @@ import subprocess
 import time
 import urllib.request
 
+# Settings come from a private file written by the workflow (the emulator runner doesn't
+# forward step environment variables into the script).
+if os.path.exists(".test-env.json"):
+    for k, v in json.load(open(".test-env.json")).items():
+        if v and not os.environ.get(k):
+            os.environ[k] = v
+
 PKG = "com.nuviodebug.com"
 OUT = "out"
 REPO = os.environ.get("THUMBS_REPO", "").strip()
