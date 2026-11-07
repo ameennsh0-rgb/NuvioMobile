@@ -80,7 +80,13 @@ jobs:
         run: |
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           if [ -n "$URL" ]; then
-            curl -fsS "$URL/" && echo
+            # A brand-new workers.dev address can take a minute to come online.
+            for i in $(seq 1 18); do
+              curl -fsS "$URL/" && echo && exit 0
+              sleep 10
+            done
+            echo "::error::Call server at $URL is not responding."
+            exit 1
           fi
 
   build:
