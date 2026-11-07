@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: video-call-apk-${{ github.ref }}
@@ -150,3 +150,19 @@ jobs:
           path: androidApp/build/outputs/apk/full/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish to the video-call-latest release
+        # Gives a direct APK download link that stays the same for every build:
+        # https://github.com/${{ github.repository }}/releases/download/video-call-latest/nuvio-video-call.apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp androidApp/build/outputs/apk/full/debug/*.apk nuvio-video-call.apk
+          if ! gh release view video-call-latest >/dev/null 2>&1; then
+            gh release create video-call-latest \
+              --title "Nuvio with video calls (latest)" \
+              --notes "Latest Nuvio build with the watch party video call bubble. Install nuvio-video-call.apk. Updated automatically on every build of the video-chat branch." \
+              --prerelease --target "$GITHUB_SHA"
+          fi
+          gh release upload video-call-latest nuvio-video-call.apk --clobber
+          echo "Direct download: https://github.com/$GITHUB_REPOSITORY/releases/download/video-call-latest/nuvio-video-call.apk"
