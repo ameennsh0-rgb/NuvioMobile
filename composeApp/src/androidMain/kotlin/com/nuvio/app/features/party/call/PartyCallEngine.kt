@@ -111,9 +111,11 @@ internal object PartyCallEngine {
 
     private class RemotePeer(
         val info: CallPeerInfo,
-        val mids: List<String>,
-        var videoTrack: VideoTrack? = null,
-    )
+        /** trackName -> mid of the tracks we receive from this person. */
+        val pulled: Map<String, String>,
+    ) {
+        val mids: List<String> get() = pulled.values.toList()
+    }
 
     /** Room we are in or joining; set synchronously so party changes can be checked right away. */
     @Volatile private var targetRoom: String? = null
@@ -326,34 +328,54 @@ internal object PartyCallEngine {
         // Status changes (camera/mic toggles, names)
         peers.forEach { info ->
             remotes[info.memberId]?.let { existing ->
-                if (existing.info != info) {
-                    remotes[info.memberId] = RemotePeer(info, existing.mids, existing.videoTrack)
-                }
+                if (existing.info != info) remotes[info.memberId] = RemotePeer(info, existing.pulled)
             }
         }
 
-        // New people
-        peers.filter { it.memberId !in remotes && it.tracks.isNotEmpty() }.forEach { info ->
-            runCatching { pull(pc, session, info) }
-                .onFailure { Log.w(TAG, "couldn't pull ${info.memberId}", it) }
+        // New people, and tracks we couldn't get last time (e.g. a camera that wasn't ready yet)
+        peers.forEach { info ->
+            val have = remotes[info.memberId]?.pulled.orEmpty()
+            val missing = info.tracks.filter { it !in have }
+            if (missing.isEmpty()) {
+                if (info.memberId !in remotes) remotes[info.memberId] = RemotePeer(info, have)
+                return@forEach
+            }
+            runCatching { pull(pc, session, info, missing, have) }
+                .onFailure {
+                    Log.w(TAG, "couldn't pull ${info.memberId}", it)
+                    if (info.memberId !in remotes) remotes[info.memberId] = RemotePeer(info, have)
+                }
         }
         refreshTiles()
     }
 
-    private suspend fun pull(pc: PeerConnection, session: String, info: CallPeerInfo) {
+    private suspend fun pull(
+        pc: PeerConnection,
+        session: String,
+        info: CallPeerInfo,
+        trackNames: List<String>,
+        already: Map<String, String>,
+    ) {
         negotiation.withLock {
-            val result = server.pullTracks(session, info.sessionId, info.tracks)
+            val result = server.pullTracks(session, info.sessionId, trackNames)
+            Log.i(TAG, "pulled ${info.name}: asked $trackNames, got ${result.mids}")
             if (result.requiresRenegotiation && result.offerSdp != null) {
                 pc.awaitSetRemote(SessionDescription(SessionDescription.Type.OFFER, result.offerSdp))
                 val answer = pc.awaitCreateAnswer()
                 pc.awaitSetLocal(answer)
                 server.renegotiate(session, pc.localDescription?.description ?: answer.description)
             }
-            val video = pc.transceivers
-                .firstOrNull { it.mid in result.mids && it.receiver.track() is VideoTrack }
-                ?.receiver?.track() as? VideoTrack
-            remotes[info.memberId] = RemotePeer(info, result.mids, video)
+            remotes[info.memberId] = RemotePeer(info, already + result.mids)
         }
+    }
+
+    /** Finds the video track we receive from [remote], if it has arrived. */
+    private fun remoteVideo(remote: RemotePeer): VideoTrack? {
+        val pc = peerConnection ?: return null
+        val mid = remote.pulled[VIDEO_TRACK] ?: return null
+        return runCatching {
+            pc.transceivers.firstOrNull { it.mid == mid }?.receiver?.track() as? VideoTrack
+        }.getOrNull()
     }
 
     private suspend fun teardown() {
@@ -392,12 +414,13 @@ internal object PartyCallEngine {
             micOn = _state.value.micOn,
         )
         val others = remotes.values.map { remote ->
+            val video = remoteVideo(remote)
             CallTile(
                 memberId = remote.info.memberId,
                 name = remote.info.name,
                 isLocal = false,
-                videoTrack = remote.videoTrack,
-                cameraOn = remote.info.camera && remote.videoTrack != null,
+                videoTrack = video,
+                cameraOn = remote.info.camera && video != null,
                 micOn = remote.info.mic,
             )
         }.sortedBy { it.name.lowercase() }

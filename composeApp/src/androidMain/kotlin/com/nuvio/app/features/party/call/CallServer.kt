@@ -64,12 +64,14 @@ internal class CallServer(
             }
         })
         val response = send("POST", "/sfu/sessions/$sessionId/tracks/new", body)
-        val mids = mutableListOf<String>()
+        val mids = linkedMapOf<String, String>()
         response.optJSONArray("tracks")?.let { array ->
             for (i in 0 until array.length()) {
                 val track = array.optJSONObject(i) ?: continue
                 if (track.has("errorCode")) continue
-                track.optString("mid").takeIf { it.isNotBlank() }?.let(mids::add)
+                val mid = track.optString("mid").takeIf { it.isNotBlank() } ?: continue
+                val name = track.optString("trackName").takeIf { it.isNotBlank() } ?: trackNames.getOrNull(i) ?: continue
+                mids[name] = mid
             }
         }
         val description = response.optJSONObject("sessionDescription")
@@ -163,6 +165,7 @@ internal class CallServer(
     data class PullResult(
         val offerSdp: String?,
         val requiresRenegotiation: Boolean,
-        val mids: List<String>,
+        /** trackName -> mid, for the tracks the SFU accepted. */
+        val mids: Map<String, String>,
     )
 }

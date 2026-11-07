@@ -24,7 +24,9 @@ internal class CallVideoView(context: Context) : TextureView(context), TextureVi
 
     init {
         surfaceTextureListener = this
-        isOpaque = false
+        // The renderer draws without an alpha channel; a see-through TextureView shows
+        // garbage where alpha is undefined, so keep it opaque.
+        isOpaque = true
     }
 
     fun bind(eglContext: EglBase.Context?, newTrack: VideoTrack?, mirror: Boolean) {
@@ -36,7 +38,7 @@ internal class CallVideoView(context: Context) : TextureView(context), TextureVi
         renderer.setMirror(mirror)
         if (newTrack === track) return
         runCatching { track?.removeSink(this) }
-        if (initialized) renderer.clearImage()
+        if (initialized) renderer.clearImage(0.14f, 0.14f, 0.16f, 1f)
         track = newTrack
         if (initialized) runCatching { newTrack?.addSink(this) }
     }
@@ -56,6 +58,7 @@ internal class CallVideoView(context: Context) : TextureView(context), TextureVi
 
     private fun attachSurface(surface: SurfaceTexture) {
         renderer.createEglSurface(surface)
+        renderer.clearImage(0.14f, 0.14f, 0.16f, 1f)
         if (width > 0 && height > 0) renderer.setLayoutAspectRatio(width.toFloat() / height)
     }
 
