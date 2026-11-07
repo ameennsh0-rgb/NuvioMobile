@@ -124,6 +124,23 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
             )
         }
 
+        outDir.resolve("com/nuvio/app/features/party/call").apply {
+            mkdirs()
+            val callUrl = (props.getProperty("NUVIO_CALL_URL") ?: System.getenv("NUVIO_CALL_URL") ?: "")
+                .trim().trimEnd('/')
+            val callKey = (props.getProperty("NUVIO_CALL_KEY") ?: System.getenv("NUVIO_CALL_KEY") ?: "").trim()
+            resolve("PartyCallConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.party.call
+                |
+                |object PartyCallConfig {
+                |    const val SERVER_URL = "$callUrl"
+                |    const val KEY = "$callKey"
+                |}
+                """.trimMargin()
+            )
+        }
+
         outDir.resolve("com/nuvio/app/features/mdblist").apply {
             mkdirs()
             resolve("MdbListConfig.kt").writeText(
@@ -468,6 +485,8 @@ kotlin {
                 implementation("androidx.media3:media3-effect:1.8.0")
                 implementation("androidx.annotation:annotation-experimental:1.3.1")
                 implementation(libs.mpv.android.lib)
+                // WebRTC for the watch party video call bubble
+                implementation("io.getstream:stream-webrtc-android:1.3.10")
                 implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("lib-*.aar"))))
                 if (androidDistribution == "full") {
                     implementation(files("libs/quickjs-kt-android-1.0.5-nuvio.aar"))

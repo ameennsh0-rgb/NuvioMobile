@@ -1,0 +1,146 @@
+name: Build Video Call APK
+
+# Deploys the nuvio-call Cloudflare Worker (video call server) and builds an
+# installable APK of Nuvio Mobile with the watch party video call bubble.
+# Runs on every push to the video-chat branch, or manually from the Actions tab.
+#
+# Repository secrets used:
+#   NUVIO_LOCAL_PROPERTIES_BASE64  account sync config (same as before)
+#   CF_REALTIME_APP_ID             Cloudflare Realtime SFU App ID
+#   CF_REALTIME_APP_SECRET         Cloudflare Realtime SFU App Secret
+#   CLOUDFLARE_API_TOKEN           API token allowed to edit Workers (to deploy the call server)
+#   CLOUDFLARE_ACCOUNT_ID          your Cloudflare account ID
+#   CALL_SERVER_URL                optional: use an already-deployed call server instead
+
+on:
+  push:
+    branches: [video-chat]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-call-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  call-server:
+    name: Deploy call server
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      url: ${{ steps.result.outputs.url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Deploy Worker
+        id: deploy
+        working-directory: call-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_REALTIME_APP_ID: ${{ secrets.CF_REALTIME_APP_ID }}
+          CF_REALTIME_APP_SECRET: ${{ secrets.CF_REALTIME_APP_SECRET }}
+          MANUAL_URL: ${{ secrets.CALL_SERVER_URL }}
+        run: |
+          if [ -n "$MANUAL_URL" ]; then
+            echo "Using CALL_SERVER_URL secret; skipping deploy."
+            echo "url=${MANUAL_URL%/}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID secrets missing; the APK will build without video calls."
+            exit 0
+          fi
+          if [ -z "$CF_REALTIME_APP_ID" ] || [ -z "$CF_REALTIME_APP_SECRET" ]; then
+            echo "::warning::CF_REALTIME_APP_ID / CF_REALTIME_APP_SECRET secrets missing; the APK will build without video calls."
+            exit 0
+          fi
+          npx --yes wrangler@4 deploy 2>&1 | tee deploy.log
+          printf '%s' "$CF_REALTIME_APP_ID" | npx --yes wrangler@4 secret put CF_REALTIME_APP_ID
+          printf '%s' "$CF_REALTIME_APP_SECRET" | npx --yes wrangler@4 secret put CF_REALTIME_APP_SECRET
+          url=$(grep -oE 'https://nuvio-call\.[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          if [ -z "$url" ]; then
+            echo "::error::Deployed, but couldn't find the workers.dev URL. Open Workers & Pages in the Cloudflare dashboard once to claim a workers.dev subdomain, then re-run."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check call server
+        id: result
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          if [ -n "$URL" ]; then
+            curl -fsS "$URL/" && echo
+          fi
+
+  build:
+    name: Build fullDebug APK
+    needs: call-server
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare local.properties
+        env:
+          LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+          CALL_URL: ${{ needs.call-server.outputs.url || secrets.CALL_SERVER_URL }}
+        run: |
+          if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
+            printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
+            sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE|NUVIO_CALL_URL)[[:space:]]*=/d' local.properties
+          else
+            touch local.properties
+          fi
+          if [ -n "$CALL_URL" ]; then
+            printf '\nNUVIO_CALL_URL=%s\n' "$CALL_URL" >> local.properties
+            echo "Video calls enabled: $CALL_URL"
+          else
+            echo "::warning::No call server URL; this APK won't show the video call bubble."
+          fi
+
+      - name: Check sync config is present
+        run: |
+          if ! grep -Eq '^NUVIO_SUPABASE_URL=.+' local.properties || ! grep -Eq '^NUVIO_SUPABASE_ANON_KEY=.+' local.properties; then
+            echo "::error::NUVIO_LOCAL_PROPERTIES_BASE64 secret is missing or incomplete; account sync and watch parties would not work."
+            exit 1
+          fi
+          echo "Sync config present."
+
+      - name: Use a fixed debug signing key
+        # Same key as the earlier fork builds, so this installs as an update.
+        run: |
+          mkdir -p ~/.android
+          cp .github/nuvio-debug.keystore ~/.android/debug.keystore
+
+      - name: Build APK
+        run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuvio-video-call-apk
+          path: androidApp/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30

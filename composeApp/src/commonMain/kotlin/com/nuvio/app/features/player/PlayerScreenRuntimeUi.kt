@@ -28,6 +28,7 @@ import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.core.ui.LocalFold
 import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.party.PartyRepository
+import com.nuvio.app.features.party.call.PartyCallBubble
 import com.nuvio.app.features.p2p.formatP2pMegabytes
 import com.nuvio.app.features.p2p.formatP2pSpeed
 import com.nuvio.app.features.player.skip.internalSkipAction
@@ -295,6 +296,11 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
         }
     }
     Box(modifier = panelModifier) {
+        val callPartyState by PartyRepository.state.collectAsStateWithLifecycle()
+        PartyCallBubble(
+            party = callPartyState.party,
+            visible = !isInPip,
+        )
         RenderParty(
             runtime = runtime,
             panelWidth = partyPanelWidth,
