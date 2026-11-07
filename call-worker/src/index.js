@@ -51,7 +51,9 @@ async function proxySfu(request, env, rest) {
     (rest.length === 3 && rest[1] === "tracks" && rest[2] === "close" && request.method === "PUT");
   if (!allowed) return json({ error: "not_found" }, 404);
 
-  const body = request.method === "POST" || request.method === "PUT" ? await request.text() : undefined;
+  let body = request.method === "POST" || request.method === "PUT" ? await request.text() : undefined;
+  // The SFU rejects an empty JSON object; send no body instead.
+  if (body !== undefined && body.trim().replace(/\s/g, "") === "{}") body = undefined;
   const upstream = await fetch(`${SFU_BASE}/${env.CF_REALTIME_APP_ID}/sessions/${rest.join("/")}`, {
     method: request.method,
     headers: {
