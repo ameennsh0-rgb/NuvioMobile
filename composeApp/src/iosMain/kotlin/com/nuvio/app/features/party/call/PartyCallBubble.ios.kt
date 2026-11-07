@@ -8,6 +8,7 @@ import com.nuvio.app.features.party.ActiveParty
 actual fun PartyCallBubble(
     party: ActiveParty?,
     visible: Boolean,
+    controlsVisible: Boolean,
     modifier: Modifier,
 ) {
     // Video calls are Android-only for now.

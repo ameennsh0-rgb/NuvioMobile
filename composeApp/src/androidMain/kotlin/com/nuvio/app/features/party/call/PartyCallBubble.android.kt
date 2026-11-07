@@ -5,6 +5,12 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,6 +80,7 @@ private const val MAX_TILES = 4
 actual fun PartyCallBubble(
     party: ActiveParty?,
     visible: Boolean,
+    controlsVisible: Boolean,
     modifier: Modifier,
 ) {
     val state by PartyCallEngine.state.collectAsStateWithLifecycle()
@@ -138,10 +145,16 @@ actual fun PartyCallBubble(
                 label = "partyCallBubble",
             ) { mode ->
                 when (mode) {
-                    BubbleMode.Join -> JoinPill(error = state.error, onClick = {
-                        PartyCallEngine.clearError()
-                        startCall()
-                    })
+                    BubbleMode.Join -> AnimatedVisibility(
+                        visible = controlsVisible || state.error != null,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                    ) {
+                        JoinPill(error = state.error, onClick = {
+                            PartyCallEngine.clearError()
+                            startCall()
+                        })
+                    }
                     BubbleMode.Collapsed -> CollapsedBubble(
                         people = state.tiles.size,
                         connecting = state.phase == CallUiState.Phase.Connecting,
@@ -149,6 +162,7 @@ actual fun PartyCallBubble(
                     )
                     BubbleMode.Expanded -> ExpandedBubble(
                         state = state,
+                        controlsVisible = controlsVisible,
                         onCollapse = { collapsed = true },
                     )
                 }
@@ -215,11 +229,16 @@ private fun CollapsedBubble(people: Int, connecting: Boolean, onClick: () -> Uni
 }
 
 @Composable
-private fun ExpandedBubble(state: CallUiState, onCollapse: () -> Unit) {
+private fun ExpandedBubble(state: CallUiState, controlsVisible: Boolean, onCollapse: () -> Unit) {
+    // With controls hidden only the camera tiles stay, on a fully see-through backdrop.
+    val backdrop by animateColorAsState(
+        targetValue = if (controlsVisible) BubbleBackground else Color.Transparent,
+        label = "callBubbleBackdrop",
+    )
     Column(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(BubbleBackground)
+            .background(backdrop)
             .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -244,6 +263,11 @@ private fun ExpandedBubble(state: CallUiState, onCollapse: () -> Unit) {
         state.error?.let {
             Text(it, color = EndRed, fontSize = 11.sp, maxLines = 2, modifier = Modifier.width(TileWidth * 2))
         }
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             ControlButton(
                 icon = if (state.micOn) Icons.Rounded.Mic else Icons.Rounded.MicOff,
@@ -262,6 +286,7 @@ private fun ExpandedBubble(state: CallUiState, onCollapse: () -> Unit) {
             }
             ControlButton(Icons.Rounded.CloseFullscreen, "Minimize", true, onClick = onCollapse)
             ControlButton(Icons.Rounded.CallEnd, "Leave call", true, background = EndRed) { PartyCallEngine.leave() }
+        }
         }
     }
 }

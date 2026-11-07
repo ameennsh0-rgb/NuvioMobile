@@ -300,6 +300,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
         PartyCallBubble(
             party = callPartyState.party,
             visible = !isInPip,
+            controlsVisible = (controlsVisible || fold != null) && !playerControlsLocked,
         )
         RenderParty(
             runtime = runtime,
