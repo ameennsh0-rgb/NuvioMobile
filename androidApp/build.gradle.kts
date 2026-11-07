@@ -55,6 +55,16 @@ android {
     compileSdkMinor = libs.versions.android.compileSdkMinor.get().toInt()
 
     signingConfigs {
+        // Fixed debug key kept in the repo so every CI build installs as an update.
+        val fixedDebugKeystore = rootProject.file(".github/nuvio-debug.keystore")
+        if (fixedDebugKeystore.exists()) {
+            getByName("debug") {
+                storeFile = fixedDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
             if (releaseKeystore != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
                 storeFile = releaseKeystore
