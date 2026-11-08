@@ -1,0 +1,67 @@
+name: Publish APK to Cloudflare
+
+# Copies the APK from an earlier successful "Build Video Call APK" run to the
+# Cloudflare download page, without rebuilding.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Build run ID to publish (leave empty for the latest successful build)"
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: video-chat
+
+      - name: Find build
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN: ${{ inputs.run_id }}
+        run: |
+          id="$INPUT_RUN"
+          if [ -z "$id" ]; then
+            id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/video-call-apk.yml/runs?status=success&per_page=1" -q '.workflow_runs[0].id')
+          fi
+          echo "Publishing APK from run $id"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: nuvio-video-call-apk
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          path: apk
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Publish to Cloudflare
+        working-directory: apk-host
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          apk=$(ls ../apk/*.apk | head -1)
+          ./split.sh "$apk"
+          for attempt in 1 2 3; do
+            npx --yes wrangler@4 deploy 2>&1 | tee deploy.log && break
+            sleep 30
+          done
+          url=$(grep -oE 'https://nuvio-apk\.[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "Direct download: $url/nuvio-video-call.apk"
+          echo "### Download: $url/nuvio-video-call.apk" >> "$GITHUB_STEP_SUMMARY"
