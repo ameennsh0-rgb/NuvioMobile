@@ -134,6 +134,16 @@ jobs:
           fi
           echo "Sync config present."
 
+      - name: Use download mirrors (avoid GitHub-hosted downloads)
+        run: |
+          # Gradle itself: Tencent mirror, verified against Gradle's official checksum.
+          sed -i 's#^distributionUrl=.*#distributionUrl=https\\://mirrors.cloud.tencent.com/gradle/gradle-9.4.1-bin.zip#' gradle/wrapper/gradle-wrapper.properties
+          grep -q '^distributionSha256Sum=' gradle/wrapper/gradle-wrapper.properties || \
+            echo 'distributionSha256Sum=2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb' >> gradle/wrapper/gradle-wrapper.properties
+          mkdir -p ~/.gradle/init.d
+          cp .github/ci-mirrors.init.gradle.kts ~/.gradle/init.d/
+          cat gradle/wrapper/gradle-wrapper.properties
+
       - name: Use a fixed debug signing key
         # Same key as the earlier fork builds, so this installs as an update.
         run: |
