@@ -101,7 +101,11 @@ object PartyRepository {
             AppForegroundMonitor.events()
                 .flowOn(Dispatchers.Main)
                 .filter { it == AppVisibility.Foreground }
-                .collect { refreshEnabled() }
+                .collect {
+                    refreshEnabled()
+                    // Back from the background (e.g. screen was off): make sure we're still in the party.
+                    if (_state.value.party != null) refreshMembers(null)
+                }
         }
     }
 
@@ -282,6 +286,7 @@ object PartyRepository {
             }.onFailure { log.w(it) { "Watch party channel failed" } }
         }
         session.launch { heartbeatLoop() }
+        session.launch { connectionWatchdog() }
         session.launch { refineClock() }
         session.launch { coordinatorLoop() }
         PartyChat.start(PartyChatRoom(party.id, party.memberId, party.members))
@@ -551,6 +556,49 @@ object PartyRepository {
         }
     }
 
+    /**
+     * If the live connection stays down (screen off, network change, expired token),
+     * reopen it instead of waiting forever for the library to recover on its own.
+     */
+    private suspend fun connectionWatchdog() {
+        var downSince: TimeMark? = null
+        while (currentScopeActive()) {
+            delay(WATCHDOG_TICK)
+            val party = _state.value.party ?: return
+            if (channel?.isConnected == true) {
+                downSince = null
+                continue
+            }
+            val since = downSince ?: clock.mark().also { downSince = it }
+            if (since.elapsedNow() < RECONNECT_AFTER) continue
+            downSince = null
+            reopenChannel(party.id)
+        }
+    }
+
+    private suspend fun reopenChannel(partyId: String) {
+        mutex.withLock {
+            val party = _state.value.party?.takeIf { it.id == partyId } ?: return@withLock
+            val session = sessionScope ?: return@withLock
+            log.i { "Watch party connection lost; reconnecting" }
+            channel?.close()
+            val partyChannel = PartyChannel(party.id, party.memberId)
+            channel = partyChannel
+            session.launch {
+                runCatching {
+                    partyChannel.open(
+                        scope = session,
+                        onMessage = { event, payload -> session.launch { onMessage(event, payload) } },
+                        onPresence = { joins, leaves -> session.launch { onPresence(joins, leaves) } },
+                        onConnected = { connected -> session.launch { onConnection(connected) } },
+                    )
+                }.onFailure { log.w(it) { "Watch party reconnect failed" } }
+            }
+        }
+        // Rejoins automatically if the server dropped us while we were away.
+        refreshMembers(null)
+    }
+
     private suspend fun refreshEnabled() {
         if (!ServerConfigurationRepository.active.value.capabilities.watchParty) return
         val enabled = runRemote { PartyApi.enabled() } ?: return
@@ -695,6 +743,8 @@ object PartyRepository {
     private const val DEFAULT_NAME = "Nuvio"
     private val COLOR_PATTERN = Regex("^#[0-9A-Fa-f]{6}$")
     private val HEARTBEAT_INTERVAL = 2.minutes
+    private val WATCHDOG_TICK = 3.seconds
+    private val RECONNECT_AFTER = 12.seconds
     private val PERSIST_DELAY = 1.5.seconds
     private val COORDINATOR_TICK = 0.5.seconds
     private val RESUME_GRACE = 3.seconds

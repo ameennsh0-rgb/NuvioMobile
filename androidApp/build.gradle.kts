@@ -76,6 +76,13 @@ android {
     }
 
     defaultConfig {
+        // Optional: build for only some CPU types (e.g. arm64-v8a) to make a much smaller APK.
+        providers.gradleProperty("nuvio.android.abi").orNull?.takeIf { it.isNotBlank() }?.let { abis ->
+            ndk {
+                abiFilters.clear()
+                abiFilters += abis.split(",").map { it.trim() }
+            }
+        }
         applicationId = "com.nuvio.app"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()

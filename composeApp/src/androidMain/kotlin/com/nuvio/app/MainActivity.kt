@@ -89,6 +89,7 @@ open class MainActivity : AppCompatActivity() {
         SentryInitializer.start(application)
         super.onCreate(savedInstanceState)
         AutoSyncPreferencesAndroid.initialize(applicationContext) // AutoSync hook
+        com.nuvio.app.features.party.PartyKeepAliveService.install(applicationContext)
         window.setBackgroundDrawableResource(R.color.nuvio_background)
         pipRemoteActionReceiver = PipRemoteActionReceiver.register(this)
         SyncClientIdentityStorage.initialize(applicationContext)
