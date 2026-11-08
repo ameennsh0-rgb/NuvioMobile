@@ -141,7 +141,16 @@ jobs:
           cp .github/nuvio-debug.keystore ~/.android/debug.keystore
 
       - name: Build APK
-        run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore -Pnuvio.android.abi=arm64-v8a --stacktrace
+        # Retries: GitHub's download servers sometimes time out (504) fetching Gradle or the Kotlin compiler.
+        run: |
+          for attempt in 1 2 3 4; do
+            if ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore -Pnuvio.android.abi=arm64-v8a --stacktrace; then
+              exit 0
+            fi
+            echo "::warning::Build attempt $attempt failed; retrying in 60s"
+            sleep 60
+          done
+          exit 1
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
@@ -164,5 +173,8 @@ jobs:
               --notes "Latest Nuvio build with the watch party video call bubble. Install nuvio-video-call.apk. Updated automatically on every build of the video-chat branch." \
               --prerelease --target "$GITHUB_SHA"
           fi
-          gh release upload video-call-latest nuvio-video-call.apk --clobber
+          for attempt in 1 2 3; do
+            gh release upload video-call-latest nuvio-video-call.apk --clobber && break
+            sleep 30
+          done
           echo "Direct download: https://github.com/$GITHUB_REPOSITORY/releases/download/video-call-latest/nuvio-video-call.apk"
