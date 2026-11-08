@@ -178,3 +178,29 @@ jobs:
             sleep 30
           done
           echo "Direct download: https://github.com/$GITHUB_REPOSITORY/releases/download/video-call-latest/nuvio-video-call.apk"
+
+      - name: Set up Node (for Cloudflare upload)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Publish to Cloudflare (fast direct download)
+        # GitHub's download servers are slow/unreliable from some networks, so the APK
+        # is also served from Cloudflare: https://nuvio-apk.<your-subdomain>.workers.dev
+        working-directory: apk-host
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets missing; skipping Cloudflare upload."
+            exit 0
+          fi
+          ./split.sh ../nuvio-video-call.apk
+          for attempt in 1 2 3; do
+            npx --yes wrangler@4 deploy 2>&1 | tee deploy.log && break
+            sleep 30
+          done
+          url=$(grep -oE 'https://nuvio-apk\.[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "Direct download: $url/nuvio-video-call.apk"
+          echo "### Download: $url/nuvio-video-call.apk" >> "$GITHUB_STEP_SUMMARY"
