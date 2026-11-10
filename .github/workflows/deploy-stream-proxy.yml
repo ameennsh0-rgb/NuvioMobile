@@ -1,0 +1,43 @@
+name: Deploy Stream Proxy
+
+# Deploys the Nuvio stream relay to Cloudflare, reusing this repo's secrets.
+# Live at: https://nuvio-stream.<your-subdomain>.workers.dev
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-stream-proxy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Deploy
+        working-directory: stream-proxy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STREAM_KEY: ${{ secrets.STREAM_PROXY_KEY }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Cloudflare secrets missing."; exit 1
+          fi
+          for attempt in 1 2 3; do
+            npx --yes wrangler@4 deploy 2>&1 | tee deploy.log && break
+            sleep 20
+          done
+          if [ -n "$STREAM_KEY" ]; then
+            printf '%s' "$STREAM_KEY" | npx --yes wrangler@4 secret put STREAM_KEY
+          fi
+          url=$(grep -oE 'https://nuvio-stream\.[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "### Stream relay: $url" >> "$GITHUB_STEP_SUMMARY"
