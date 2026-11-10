@@ -39,34 +39,43 @@ export default {
     if (!/^https?:$/.test(targetUrl.protocol)) return cors(new Response("Only http(s)", { status: 400 }));
     if (isPrivateHost(targetUrl.hostname)) return cors(new Response("Blocked host", { status: 403 }));
 
-    const headers = new Headers();
-    headers.set(
-      "user-agent",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    );
-    headers.set("accept", "*/*");
-    headers.set("referer", targetUrl.origin + "/");
-    headers.set("origin", targetUrl.origin);
-    // Caller-supplied header overrides (e.g. a specific Referer the source needs).
     const h = url.searchParams.get("h");
+    let extra = null;
     if (h) {
       try {
-        const extra = JSON.parse(b64urlDecode(h));
-        for (const key in extra) {
-          if (extra[key]) headers.set(key, String(extra[key]));
-        }
+        extra = JSON.parse(b64urlDecode(h));
       } catch (_) {}
     }
     const range = request.headers.get("range");
-    if (range) headers.set("range", range);
+    const method = request.method === "HEAD" ? "HEAD" : "GET";
+
+    // Build upstream headers. spoofOrigin adds Referer/Origin = the target's own
+    // origin, which bypasses hotlink protection — but breaks open CDNs that reject
+    // an unexpected Origin, so we only use it on a retry after a block.
+    const buildHeaders = (spoofOrigin) => {
+      const headers = new Headers();
+      headers.set(
+        "user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      );
+      headers.set("accept", "*/*");
+      if (spoofOrigin) {
+        headers.set("referer", targetUrl.origin + "/");
+        headers.set("origin", targetUrl.origin);
+      }
+      if (extra) for (const key in extra) if (extra[key]) headers.set(key, String(extra[key]));
+      if (range) headers.set("range", range);
+      return headers;
+    };
 
     let upstream;
     try {
-      upstream = await fetch(targetUrl.toString(), {
-        method: request.method === "HEAD" ? "HEAD" : "GET",
-        headers,
-        redirect: "follow",
-      });
+      // Try a clean request first (works for open CDNs).
+      upstream = await fetch(targetUrl.toString(), { method, headers: buildHeaders(false), redirect: "follow" });
+      // If the source blocks it, retry pretending the request came from its own site.
+      if (upstream.status === 401 || upstream.status === 403) {
+        upstream = await fetch(targetUrl.toString(), { method, headers: buildHeaders(true), redirect: "follow" });
+      }
     } catch (e) {
       return cors(new Response("Upstream fetch failed: " + e, { status: 502 }));
     }
