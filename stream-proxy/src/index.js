@@ -22,6 +22,14 @@ export default {
     if (url.pathname === "/") {
       return new Response(landing(), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
+
+    // Restricted JSON passthrough for debrid provider APIs (browsers can't call
+    // them directly: CORS). Limited to known debrid hosts so it isn't a general
+    // proxy. Forwards method, body and the Authorization header, adds CORS.
+    if (url.pathname === "/api") {
+      return handleApi(request, url);
+    }
+
     if (url.pathname !== "/stream") return cors(new Response("Not found", { status: 404 }));
 
     const target = url.searchParams.get("url");
@@ -106,6 +114,57 @@ export default {
     return cors(new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out }));
   },
 };
+
+const API_HOSTS = new Set([
+  "api.torbox.app",
+  "www.premiumize.me",
+  "premiumize.me",
+  "api.real-debrid.com",
+]);
+
+async function handleApi(request, url) {
+  const target = url.searchParams.get("url");
+  if (!target) return cors(new Response("Missing url", { status: 400 }));
+  let t;
+  try {
+    t = new URL(target);
+  } catch (_) {
+    return cors(new Response("Bad url", { status: 400 }));
+  }
+  if (!/^https?:$/.test(t.protocol) || isPrivateHost(t.hostname)) {
+    return cors(new Response("Blocked host", { status: 403 }));
+  }
+  if (!API_HOSTS.has(t.hostname)) return cors(new Response("Host not allowed", { status: 403 }));
+
+  const fwd = new Headers();
+  for (const [k, v] of request.headers) {
+    const lk = k.toLowerCase();
+    if (
+      lk === "host" ||
+      lk === "origin" ||
+      lk === "referer" ||
+      lk === "content-length" ||
+      lk === "x-real-ip" ||
+      lk.startsWith("cf-") ||
+      lk.startsWith("x-forwarded")
+    ) {
+      continue;
+    }
+    fwd.set(k, v);
+  }
+  const init = { method: request.method, headers: fwd, redirect: "follow" };
+  if (request.method !== "GET" && request.method !== "HEAD") init.body = await request.text();
+
+  let up;
+  try {
+    up = await fetch(t.toString(), init);
+  } catch (e) {
+    return cors(new Response("Upstream failed: " + e, { status: 502 }));
+  }
+  const out = new Headers();
+  copyHeader(up, out, "content-type");
+  return cors(new Response(up.body, { status: up.status, statusText: up.statusText, headers: out }));
+}
 
 function rewriteManifest(text, baseUrl, proxyUrl, h, env) {
   const proxyBase = proxyUrl.origin + "/stream";
