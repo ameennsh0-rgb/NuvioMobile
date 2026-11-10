@@ -128,6 +128,7 @@ export class CallRoom {
         name: peer.name,
         camera: peer.camera,
         mic: peer.mic,
+        sfuSession: peer.sessionId,
       });
       return json({ peers: Object.values(peers) });
     }
@@ -193,12 +194,19 @@ export class CallDirectory {
           name TEXT NOT NULL,
           camera INTEGER NOT NULL DEFAULT 1,
           mic INTEGER NOT NULL DEFAULT 1,
+          sfu_session TEXT,
           joined_at INTEGER NOT NULL,
           left_at INTEGER,
           last_seen INTEGER NOT NULL,
           PRIMARY KEY (session_id, member_id)
         )`,
       );
+      // Add the column for databases created before it existed.
+      try {
+        this.sql.exec(`ALTER TABLE participants ADD COLUMN sfu_session TEXT`);
+      } catch (_) {
+        // Already present.
+      }
     });
   }
 
@@ -234,20 +242,21 @@ export class CallDirectory {
     const name = String(body.name || "Guest").slice(0, 60);
     const camera = body.camera ? 1 : 0;
     const mic = body.mic ? 1 : 0;
+    const sfuSession = body.sfuSession ? String(body.sfuSession).slice(0, 120) : null;
     const exists = this.sql
       .exec(`SELECT member_id FROM participants WHERE session_id = ? AND member_id = ?`, sessionId, memberId)
       .toArray()[0];
     if (exists) {
       this.sql.exec(
-        `UPDATE participants SET name = ?, camera = ?, mic = ?, last_seen = ?, left_at = NULL
-         WHERE session_id = ? AND member_id = ?`,
-        name, camera, mic, now, sessionId, memberId,
+        `UPDATE participants SET name = ?, camera = ?, mic = ?, sfu_session = COALESCE(?, sfu_session),
+         last_seen = ?, left_at = NULL WHERE session_id = ? AND member_id = ?`,
+        name, camera, mic, sfuSession, now, sessionId, memberId,
       );
     } else {
       this.sql.exec(
-        `INSERT INTO participants(session_id, member_id, name, camera, mic, joined_at, last_seen)
-         VALUES(?, ?, ?, ?, ?, ?, ?)`,
-        sessionId, memberId, name, camera, mic, now, now,
+        `INSERT INTO participants(session_id, member_id, name, camera, mic, sfu_session, joined_at, last_seen)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        sessionId, memberId, name, camera, mic, sfuSession, now, now,
       );
     }
     const active = this.activeCount(sessionId);
@@ -310,7 +319,7 @@ export class CallDirectory {
     const live = liveRows.map((s) => {
       const people = this.sql
         .exec(
-          `SELECT name, camera, mic, joined_at FROM participants
+          `SELECT name, camera, mic, sfu_session, joined_at FROM participants
            WHERE session_id = ? AND left_at IS NULL ORDER BY joined_at`,
           s.id,
         )
@@ -324,6 +333,7 @@ export class CallDirectory {
           name: p.name,
           cameraOn: !!p.camera,
           micOn: !!p.mic,
+          sfuSession: p.sfu_session || null,
           joinedAt: p.joined_at,
         })),
       };
@@ -335,17 +345,17 @@ export class CallDirectory {
       )
       .toArray()
       .map((s) => {
-        const names = this.sql
-          .exec(`SELECT DISTINCT name FROM participants WHERE session_id = ? ORDER BY joined_at`, s.id)
+        const people = this.sql
+          .exec(`SELECT name, sfu_session FROM participants WHERE session_id = ? ORDER BY joined_at`, s.id)
           .toArray()
-          .map((r) => r.name);
+          .map((r) => ({ name: r.name, sfuSession: r.sfu_session || null }));
         return {
           room: s.room,
           startedAt: s.started_at,
           endedAt: s.ended_at,
           durationSec: Math.max(0, Math.round((s.ended_at - s.started_at) / 1000)),
           peak: s.peak,
-          participants: names,
+          participants: people,
         };
       });
     const totals = this.sql
@@ -487,6 +497,8 @@ h2{font-size:15px;color:#c7c7d1;margin:26px 0 10px;text-transform:uppercase;lett
 .room{font-weight:700;font-size:15px}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .chip{background:#23232c;border-radius:999px;padding:5px 11px;font-size:13px;display:flex;align-items:center;gap:6px}
 .ico{font-size:12px;opacity:.65}.ico.off{opacity:1;filter:grayscale(1)}
+.sid{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#8a8a95;cursor:copy}
+.phist{display:flex;flex-direction:column;gap:3px}.phist .nm{color:#e9e9ee}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #23232c;vertical-align:top}
 th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 .note{font-size:12px;color:#7a7a85;margin-top:8px}.topbtn{font-size:13px}</style></head><body><div class="wrap">
@@ -502,6 +514,8 @@ const fmtTime = ts => new Date(ts).toLocaleString();
 const ago = ts => { const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60)return s+'s'; const m=Math.round(s/60); if(m<60)return m+'m'; return Math.round(m/60)+'h'; };
 const dur = s => { if(s<60)return s+'s'; const m=Math.floor(s/60); if(m<60)return m+'m '+(s%60)+'s'; return Math.floor(m/60)+'h '+(m%60)+'m'; };
 const esc = t => { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
+const shortId = s => s ? (s.length>14 ? s.slice(0,12)+'…' : s) : '—';
+const sidTag = s => s ? '<code class="sid" title="'+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.title)">'+esc(shortId(s))+'</code>' : '<span class="sid">—</span>';
 function statCard(n,l){ return '<div class="stat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
 function render(d){
   document.getElementById('stats').innerHTML =
@@ -511,16 +525,20 @@ function render(d){
   else { live.innerHTML = d.live.map(r=>{
     const chips = r.participants.map(p=>'<span class="chip">'+esc(p.name)
       +'<span class="ico '+(p.cameraOn?'':'off')+'">'+(p.cameraOn?'📷':'🚫')+'</span>'
-      +'<span class="ico '+(p.micOn?'':'off')+'">'+(p.micOn?'🎙️':'🔇')+'</span></span>').join('');
+      +'<span class="ico '+(p.micOn?'':'off')+'">'+(p.micOn?'🎙️':'🔇')+'</span>'
+      +sidTag(p.sfuSession)+'</span>').join('');
     return '<div class="card"><div><span class="live-dot"></span><span class="room">'+esc(r.room)+'</span>'
       +' <span class="muted small">· '+r.count+' in call · started '+ago(r.startedAt)+' ago</span></div>'
       +'<div class="chips">'+chips+'</div></div>';
   }).join(''); }
   const h = document.getElementById('history');
   if(!d.history.length){ h.innerHTML='<div class="empty">No past calls yet.</div>'; }
-  else { h.innerHTML = '<table><thead><tr><th>Room</th><th>When</th><th>Length</th><th>People</th></tr></thead><tbody>'
-    + d.history.map(s=>'<tr><td>'+esc(s.room)+'</td><td>'+fmtTime(s.startedAt)+'</td><td>'+dur(s.durationSec)
-    +'</td><td>'+esc(s.participants.join(', '))+'</td></tr>').join('') + '</tbody></table>'; }
+  else { h.innerHTML = '<table><thead><tr><th>Room</th><th>When</th><th>Length</th><th>People (SFU session id)</th></tr></thead><tbody>'
+    + d.history.map(s=>{
+        const ppl = s.participants.map(p=>'<div><span class="nm">'+esc(p.name)+'</span> '+sidTag(p.sfuSession)+'</div>').join('');
+        return '<tr><td>'+esc(s.room)+'</td><td>'+fmtTime(s.startedAt)+'</td><td>'+dur(s.durationSec)
+        +'</td><td><div class="phist">'+ppl+'</div></td></tr>';
+      }).join('') + '</tbody></table>'; }
 }
 async function tick(){
   try{ const r=await fetch('/admin/api/state',{cache:'no-store'}); if(r.status===401){location.reload();return;} render(await r.json()); }
