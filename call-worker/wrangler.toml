@@ -11,6 +11,10 @@ class_name = "CallRoom"
 name = "DIRECTORY"
 class_name = "CallDirectory"
 
+[[durable_objects.bindings]]
+name = "WATCHSYNC"
+class_name = "WatchSync"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CallRoom"]
@@ -18,3 +22,7 @@ new_sqlite_classes = ["CallRoom"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["CallDirectory"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["WatchSync"]

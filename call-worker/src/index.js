@@ -22,6 +22,8 @@
 //   POST /admin/logout                          -> clear the dashboard cookie
 //   GET  /admin/api/state                       -> {live, history, stats}
 
+import { watchPage } from "./watch-app.js";
+
 const SFU_BASE = "https://rtc.live.cloudflare.com/v1/apps";
 const PEER_TTL_MS = 20_000;
 const DIRECTORY_NAME = "global";
@@ -37,6 +39,19 @@ export default {
         return await handleAdmin(request, env, url, parts.slice(1));
       }
 
+      // Web app page (watch together + video call in the browser).
+      if (parts[0] === "watch" || parts.length === 0) {
+        if (request.method === "GET") {
+          return htmlResponse(watchPage());
+        }
+      }
+
+      // Playback-sync WebSocket for a room (not gated by CALL_KEY; carries no media).
+      if (parts[0] === "rooms" && parts[1] && parts[2] === "sync") {
+        const id = env.WATCHSYNC.idFromName(parts[1]);
+        return await env.WATCHSYNC.get(id).fetch(request);
+      }
+
       // App-facing API, optionally gated by a shared CALL_KEY.
       if (env.CALL_KEY && request.headers.get("x-call-key") !== env.CALL_KEY) {
         return json({ error: "unauthorized" }, 401);
@@ -48,9 +63,6 @@ export default {
       if (parts[0] === "rooms" && parts[1]) {
         const id = env.ROOMS.idFromName(parts[1]);
         return await env.ROOMS.get(id).fetch(request);
-      }
-      if (parts.length === 0) {
-        return json({ ok: true, service: "nuvio-call" });
       }
       return json({ error: "not_found" }, 404);
     } catch (error) {
@@ -371,6 +383,75 @@ export class CallDirectory {
       },
       now: Date.now(),
     };
+  }
+}
+
+// ---- Watch-together playback sync (one Durable Object per room) ----
+//
+// A WebSocket relay so everyone in a room shares one video: the same link,
+// play/pause, and seek position. Carries control messages and chat only —
+// never any video or audio (those go peer-to-peer through the SFU).
+
+export class WatchSync {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+
+  async fetch(request) {
+    if (request.headers.get("Upgrade") !== "websocket") {
+      return json({ error: "expected_websocket" }, 426);
+    }
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server);
+    // Catch a new joiner up to the current shared state.
+    const state = await this.ctx.storage.get("state");
+    if (state) {
+      try {
+        server.send(JSON.stringify({ type: "state", ...state }));
+      } catch (_) {}
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws, raw) {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (_) {
+      return;
+    }
+    if (msg.type === "state") {
+      const state = {
+        url: msg.url ? String(msg.url).slice(0, 2000) : null,
+        paused: !!msg.paused,
+        time: Number(msg.time) || 0,
+        by: String(msg.by || "").slice(0, 60),
+        at: Date.now(),
+      };
+      await this.ctx.storage.put("state", state);
+      this.broadcast(JSON.stringify({ type: "state", ...state }), ws);
+    } else if (msg.type === "chat") {
+      this.broadcast(
+        JSON.stringify({
+          type: "chat",
+          name: String(msg.name || "Guest").slice(0, 60),
+          text: String(msg.text || "").slice(0, 500),
+          at: Date.now(),
+        }),
+        null,
+      );
+    }
+  }
+
+  broadcast(data, except) {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws !== except) {
+        try {
+          ws.send(data);
+        } catch (_) {}
+      }
+    }
   }
 }
 
