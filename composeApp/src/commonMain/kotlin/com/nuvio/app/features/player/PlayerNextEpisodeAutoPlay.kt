@@ -31,9 +31,10 @@ internal fun PlayerScreenRuntime.isAtNextEpisodeThreshold(): Boolean {
         isShortPlaceholderDuration(playbackSnapshot.durationMs)
     ) return false
     // Preload: trigger source fetch before the button appears
-    if (playerSettingsUiState.preloadNextEpisodeSources && !nextEpisodePreloadTriggered && nextEpisodeInfo != null) {
-        val preloadLeadMs = playerSettingsUiState.streamAutoPlayTimeoutSeconds.toLong() * 1_000L
-        val shouldPreload = PlayerNextEpisodeRules.shouldShowNextEpisodeCard(
+    if (playerSettingsUiState.preloadNextEpisodeSources && !nextEpisodePreloadTriggered && nextEpisodeInfo != null && !isNetworkOffline()) {
+        val preloadLeadMs = maxOf(playerSettingsUiState.streamAutoPlayTimeoutSeconds.toLong() * 1_000L, 10_000L)
+            .coerceAtMost(30_000L)
+        val shouldPreloadByCard = PlayerNextEpisodeRules.shouldShowNextEpisodeCard(
             positionMs = playbackSnapshot.positionMs + preloadLeadMs,
             durationMs = playbackSnapshot.durationMs,
             skipIntervals = skipIntervals,
@@ -41,7 +42,9 @@ internal fun PlayerScreenRuntime.isAtNextEpisodeThreshold(): Boolean {
             thresholdPercent = playerSettingsUiState.nextEpisodeThresholdPercent,
             thresholdMinutesBeforeEnd = playerSettingsUiState.nextEpisodeThresholdMinutesBeforeEnd,
         )
-        if (shouldPreload) {
+        val shouldPreloadByEnd = playbackSnapshot.durationMs > 0L &&
+            (playbackSnapshot.durationMs - playbackSnapshot.positionMs) <= preloadLeadMs
+        if (shouldPreloadByCard || shouldPreloadByEnd) {
             preloadNextEpisodeSources()
         }
     }
@@ -96,6 +99,9 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
         return null
     }
 
+    // Offline: the auto-play fan-out is a network search, so skip it entirely.
+    if (isNetworkOffline()) return null
+
     previousJob?.cancel()
     onSearchingChanged(true)
     onSourceNameChanged(null)
@@ -147,6 +153,12 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
     }
 
     return launch {
+        // Connectivity may have dropped between the request and the actual search.
+        if (isNetworkOffline()) {
+            onSearchingChanged(false)
+            return@launch
+        }
+
         PlayerStreamsRepository.loadEpisodeStreams(
             type = type,
             videoId = nextVideo.id,
@@ -344,6 +356,8 @@ internal fun PlayerScreenRuntime.preloadNextEpisodeSources() {
     val nextEp = nextEpisodeInfo ?: return
     if (nextEp.hasAired != true) return
     val type = contentType ?: return
+    // Offline: preloading streams is a network search; retry once connectivity returns.
+    if (isNetworkOffline()) return
 
     nextEpisodePreloadTriggered = true
     nextEpisodePreloadJob?.cancel()
