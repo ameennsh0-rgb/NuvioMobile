@@ -28,8 +28,31 @@ const SFU_BASE = "https://rtc.live.cloudflare.com/v1/apps";
 const PEER_TTL_MS = 20_000;
 const DIRECTORY_NAME = "global";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "content-type, x-call-key, authorization",
+  "Access-Control-Max-Age": "86400",
+};
+
+function withCors(response) {
+  // WebSocket upgrades must be returned untouched (re-wrapping drops the socket).
+  if (response.status === 101) return response;
+  const headers = new Headers(response.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request, env, ctx) {
+    // The browser (web app) sends a CORS preflight before cross-origin POST/PUT.
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+    return withCors(await this.route(request, env, ctx));
+  },
+
+  async route(request, env, ctx) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
