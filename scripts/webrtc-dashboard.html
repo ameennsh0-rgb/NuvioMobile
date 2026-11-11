@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nuvio WebRTC Dashboard</title>
+  <style>
+    :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background: #101116; color: #eef0f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(1050px, calc(100% - 32px)); margin: 36px auto; }
+    h1 { margin: 0 0 4px; font-size: 1.7rem; }
+    .muted { color: #a7adbd; }
+    .panel { margin: 18px 0; padding: 18px; border: 1px solid #303441; border-radius: 12px; background: #191c24; }
+    .grid { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(220px, 1fr); gap: 12px; }
+    label { display: block; margin-bottom: 5px; font-weight: 600; }
+    input { width: 100%; padding: 10px 11px; border: 1px solid #3a4050; border-radius: 8px; background: #101116; color: inherit; }
+    button { padding: 9px 13px; border: 0; border-radius: 8px; background: #3478f6; color: white; font: inherit; font-weight: 650; cursor: pointer; }
+    button.secondary { background: #343a49; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+    .status { min-height: 1.5em; margin-top: 12px; color: #c9d4ef; white-space: pre-wrap; }
+    .status.error { color: #ff9f9f; }
+    .notice { border-left: 4px solid #e8ab42; padding: 10px 12px; background: #282318; color: #f5dfb2; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #303441; vertical-align: top; }
+    th { color: #a7adbd; font-size: .85rem; }
+    .empty { color: #a7adbd; padding: 20px 8px; }
+    .select-row { white-space: nowrap; }
+    .consent { display: flex; gap: 9px; align-items: flex-start; margin-top: 15px; color: #e6e9f1; }
+    .consent input { width: auto; margin-top: 5px; }
+    video { display: none; width: 100%; max-height: 65vh; margin-top: 14px; background: #000; border-radius: 10px; }
+    pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #101116; white-space: pre-wrap; overflow-wrap: anywhere; }
+    code { overflow-wrap: anywhere; }
+    @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } main { margin-top: 22px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Nuvio WebRTC Dashboard</h1>
+  <div class="muted">Lists active sessions from your configured worker and requests an authorized observer stream when supported.</div>
+
+  <section class="panel">
+    <div class="grid">
+      <div>
+        <label for="worker">Worker base URL</label>
+        <input id="worker" type="url" placeholder="https://your-worker.example.com" autocomplete="url">
+      </div>
+      <div>
+        <label for="token">API token (optional)</label>
+        <input id="token" type="password" placeholder="Bearer token" autocomplete="off">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="refresh">Load active sessions</button>
+      <span class="muted">Credentials stay in this page's memory and are not saved.</span>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ongoing sessions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Session</th><th>Status</th><th>Participants</th><th>Started</th><th></th></tr></thead>
+        <tbody id="sessions"><tr><td class="empty" colspan="5">Load sessions from your worker to begin.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="observerPanel" hidden>
+    <h2>Observer stream</h2>
+    <p class="notice">Only use this for sessions you are authorized to observe. The worker must enforce access control, participant consent, and any required audit or expiry rules. The checkbox below is an acknowledgement only—it is not a security control.</p>
+    <label class="consent"><input id="consent" type="checkbox"><span>I have authorization and any required participant consent to observe this session.</span></label>
+    <div class="actions">
+      <button id="observe" disabled>Request observer stream</button>
+      <button id="stop" class="secondary" hidden>Stop playback</button>
+    </div>
+    <div id="observerStatus" class="status" role="status" aria-live="polite"></div>
+    <video id="video" controls playsinline></video>
+    <p id="streamLink" hidden></p>
+    <details><summary>Worker response</summary><pre id="response"></pre></details>
+  </section>
+</main>
+<script type="module">
+  const LIST_ENDPOINTS = [
+    '/api/sessions?state=active',
+    '/api/calls?state=active',
+    '/sessions?state=active',
+    '/calls?state=active',
+  ];
+  const OBSERVER_ENDPOINTS = [
+    id => `/api/sessions/${encodeURIComponent(id)}/observer`,
+    id => `/api/sessions/${encodeURIComponent(id)}/observe`,
+    id => `/api/calls/${encodeURIComponent(id)}/observer`,
+    id => `/session/${encodeURIComponent(id)}/observer`,
+  ];
+
+  const $ = id => document.getElementById(id);
+  const statusEl = $('status');
+  const observerStatusEl = $('observerStatus');
+  let sessions = [];
+  let selectedSession = null;
+  let currentObjectUrl = null;
+
+  function setStatus(element, message, isError = false) {
+    element.textContent = message;
+    element.classList.toggle('error', isError);
+  }
+
+  function workerBase() {
+    const value = $('worker').value.trim().replace(/\/$/, '');
+    if (!value) throw new Error('Enter your WebRTC worker base URL first.');
+    const url = new URL(value);
+    if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Worker URL must use HTTP or HTTPS.');
+    return value;
+  }
+
+  function authHeaders() {
+    const token = $('token').value.trim();
+    return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  }
+
+  async function request(path, options = {}) {
+    const response = await fetch(`${workerBase()}${path}`, {
+      ...options,
+      headers: { ...authHeaders(), ...(options.headers || {}) },
+    });
+    const text = await response.text();
+    let body = null;
+    if (text) {
+      try { body = JSON.parse(text); } catch { body = text; }
+    }
+    if (!response.ok) {
+      const message = typeof body === 'string' ? body : body?.error || body?.message || `HTTP ${response.status}`;
+      throw new Error(`${message} (${response.status})`);
+    }
+    return body;
+  }
+
+  function sessionList(payload) {
+    if (Array.isArray(payload)) return payload;
+    for (const key of ['sessions', 'calls', 'data', 'result']) {
+      if (Array.isArray(payload?.[key])) return payload[key];
+    }
+    return [];
+  }
+
+  function sessionId(session) {
+    return session?.id ?? session?.sessionId ?? session?.callId ?? session?.uuid ?? session?.key ?? '';
+  }
+
+  function sessionLabel(session) {
+    return session?.label || session?.name || session?.title || session?.callName || 'Session';
+  }
+
+  function participantCount(session) {
+    const people = session?.participants ?? session?.users ?? session?.members;
+    if (Array.isArray(people)) return String(people.length);
+    return people == null ? '—' : String(people);
+  }
+
+  function displayTime(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function renderSessions() {
+    const tbody = $('sessions');
+    tbody.replaceChildren();
+    if (!sessions.length) {
+      const row = tbody.insertRow();
+      const cell = row.insertCell();
+      cell.colSpan = 5;
+      cell.className = 'empty';
+      cell.textContent = 'No active sessions found.';
+      return;
+    }
+
+    sessions.forEach((session, index) => {
+      const row = tbody.insertRow();
+      row.insertCell().textContent = `${sessionLabel(session)}${sessionId(session) ? ` (${sessionId(session)})` : ''}`;
+      row.insertCell().textContent = session?.status || session?.state || 'active';
+      row.insertCell().textContent = participantCount(session);
+      row.insertCell().textContent = displayTime(session?.startedAt ?? session?.createdAt ?? session?.started_at);
+      const action = row.insertCell();
+      action.className = 'select-row';
+      const button = document.createElement('button');
+      button.className = 'secondary';
+      button.textContent = 'Select';
+      button.addEventListener('click', () => selectSession(index));
+      action.append(button);
+    });
+  }
+
+  function selectSession(index) {
+    selectedSession = sessions[index];
+    $('observerPanel').hidden = false;
+    $('consent').checked = false;
+    $('observe').disabled = true;
+    $('observerStatus').textContent = `Selected: ${sessionLabel(selectedSession)} (${sessionId(selectedSession) || 'unknown ID'}).`;
+    $('response').textContent = '';
+    $('streamLink').hidden = true;
+    $('video').pause();
+    $('video').removeAttribute('src');
+    $('video').load();
+    $('video').style.display = 'none';
+    $('stop').hidden = true;
+    if (currentObjectUrl) {
+      URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl = null;
+    }
+  }
+
+  function streamUrlFrom(payload) {
+    return payload?.observerUrl || payload?.streamUrl || payload?.liveStreamUrl || payload?.viewerUrl || payload?.url || payload?.data?.observerUrl || payload?.data?.streamUrl || null;
+  }
+
+  async function loadSessions() {
+    $('refresh').disabled = true;
+    setStatus(statusEl, 'Connecting to worker…');
+    try {
+      let lastError;
+      for (const endpoint of LIST_ENDPOINTS) {
+        try {
+          const payload = await request(endpoint);
+          sessions = sessionList(payload);
+          renderSessions();
+          setStatus(statusEl, `Loaded ${sessions.length} session(s) from ${endpoint}.`);
+          return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error('No compatible session-list endpoint responded.');
+    } catch (error) {
+      setStatus(statusEl, `Could not load sessions: ${error.message}\nCheck the worker URL, token, CORS settings, and endpoint paths in LIST_ENDPOINTS.`, true);
+    } finally {
+      $('refresh').disabled = false;
+    }
+  }
+
+  async function requestObserver() {
+    if (!selectedSession) return;
+    if (!$('consent').checked) {
+      setStatus(observerStatusEl, 'Confirm authorization and any required participant consent before requesting access.', true);
+      return;
+    }
+    const id = sessionId(selectedSession);
+    if (!id) {
+      setStatus(observerStatusEl, 'The selected session has no recognized ID. Adjust sessionId() for your worker response.', true);
+      return;
+    }
+
+    $('observe').disabled = true;
+    setStatus(observerStatusEl, 'Requesting an authorized observer session…');
+    try {
+      let result;
+      let lastError;
+      for (const makeEndpoint of OBSERVER_ENDPOINTS) {
+        try {
+          result = await request(makeEndpoint(id), {
+            method: 'POST',
+            body: JSON.stringify({
+              mode: 'observer',
+              allowViewer: true,
+              directStream: true,
+              joinCall: false,
+              requireConsent: true,
+            }),
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (result === undefined) throw lastError || new Error('No compatible observer endpoint responded.');
+
+      $('response').textContent = JSON.stringify(result, null, 2);
+      const streamUrl = streamUrlFrom(result);
+      if (!streamUrl) {
+        setStatus(observerStatusEl, 'Worker accepted the request but returned no recognized stream URL. See Worker response.');
+        return;
+      }
+      const parsed = new URL(streamUrl, workerBase());
+      if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Worker returned a non-HTTP stream URL; it was not opened.');
+
+      const video = $('video');
+      video.src = parsed.href;
+      video.style.display = 'block';
+      $('stop').hidden = false;
+      $('streamLink').hidden = false;
+      $('streamLink').replaceChildren();
+      const link = document.createElement('a');
+      link.href = parsed.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'Open stream URL in a new tab';
+      $('streamLink').append(link);
+      setStatus(observerStatusEl, `Observer stream returned${result?.expiresAt ? ` (expires ${result.expiresAt})` : ''}. Press Play to start; playback support depends on the worker’s stream format.`);
+    } catch (error) {
+      setStatus(observerStatusEl, `Observer request failed: ${error.message}\nCheck OBSERVER_ENDPOINTS and the worker's authorization/consent implementation.`, true);
+    } finally {
+      $('observe').disabled = !$('consent').checked;
+    }
+  }
+
+  function stopPlayback() {
+    const video = $('video');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    video.style.display = 'none';
+    $('stop').hidden = true;
+    $('streamLink').hidden = true;
+    if (currentObjectUrl) {
+      URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl = null;
+    }
+    setStatus(observerStatusEl, 'Playback stopped. If your worker issues observer tokens, revoke or let them expire there as well.');
+  }
+
+  $('refresh').addEventListener('click', loadSessions);
+  $('consent').addEventListener('change', () => {
+    $('observe').disabled = !$('consent').checked || !selectedSession;
+  });
+  $('observe').addEventListener('click', requestObserver);
+  $('stop').addEventListener('click', stopPlayback);
+
+  // Allow the existing terminal helper's environment-variable names to be
+  // supplied as query parameters for local testing, without persisting them.
+  const params = new URLSearchParams(location.search);
+  if (params.has('worker')) $('worker').value = params.get('worker');
+  if (params.has('token')) $('token').value = params.get('token');
+</script>
+</body>
+</html>
