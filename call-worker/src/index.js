@@ -30,6 +30,10 @@
 // cookie or an `x-recorder-secret` header equal to RECORDER_SECRET (used by the
 // archiver service in recorder/). If RECORDER_URL and RECORDER_SECRET are set,
 // joining a room also pings the archiver (POST /wake) so it starts recording.
+// If the IFTTT_KEY secret is set, a phone notification is sent through IFTTT
+// Webhooks when a call starts (event nuvio_call_started: value1 room, value2
+// name) and when it ends (event nuvio_call_ended: value1 room, value2 length,
+// value3 peak people).
 
 import { watchPage } from "./watch-app.js";
 
@@ -38,6 +42,34 @@ const PEER_TTL_MS = 20_000;
 const DIRECTORY_NAME = "global";
 const WAKE_EVERY_MS = 60_000; // how often a joined peer re-pings the archiver
 const RECORDING_TTL_MS = 48 * 3600_000; // matches the R2 bucket's 2-day lifecycle rule
+const IFTTT_START_EVENT = "nuvio_call_started";
+const IFTTT_END_EVENT = "nuvio_call_ended";
+const IFTTT_COOLDOWN_MS = 120_000; // don't re-announce the same room more often than this
+
+// Optional phone notification through IFTTT Webhooks. Does nothing unless the
+// IFTTT_KEY secret is set. Values: value1/value2/value3 in the applet text.
+async function iftttTrigger(env, event, values) {
+  if (!env.IFTTT_KEY) return;
+  try {
+    const base = env.IFTTT_BASE || "https://maker.ifttt.com";
+    await fetch(`${base}/trigger/${encodeURIComponent(event)}/with/key/${encodeURIComponent(env.IFTTT_KEY)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value1: values[0] || "", value2: values[1] || "", value3: values[2] || "" }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (_) {
+    // A failed notification must never affect the call.
+  }
+}
+
+function formatDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -159,6 +191,7 @@ export class CallRoom {
       if (!body.memberId || !body.sessionId) return json({ error: "bad_request" }, 400);
       const now = Date.now();
       const previous = peers[body.memberId];
+      const roomWasEmpty = Object.keys(peers).length === 0;
       const peer = {
         memberId: String(body.memberId),
         name: String(body.name || "Guest").slice(0, 60),
@@ -178,6 +211,14 @@ export class CallRoom {
       }
       peers[body.memberId] = peer;
       await this.ctx.storage.put("peers", peers);
+      // First person into an empty room: tell the owner's phone (once per call).
+      if (roomWasEmpty && this.env.IFTTT_KEY) {
+        const last = (await this.ctx.storage.get("iftttAt")) || 0;
+        if (now - last > IFTTT_COOLDOWN_MS) {
+          await this.ctx.storage.put("iftttAt", now);
+          this.ctx.waitUntil(iftttTrigger(this.env, IFTTT_START_EVENT, [room, peer.name]));
+        }
+      }
       // Record metadata for the dashboard (never any media).
       this.notifyDirectory("/heartbeat", {
         room,
@@ -248,6 +289,7 @@ export class CallDirectory {
     this.ctx = ctx;
     this.env = env;
     this.sql = ctx.storage.sql;
+    this.pending = []; // in-flight notifications, awaited by the sweep alarm
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec(
         `CREATE TABLE IF NOT EXISTS sessions(
@@ -360,7 +402,18 @@ export class CallDirectory {
 
   closeIfEmpty(sessionId, now) {
     if (this.activeCount(sessionId) === 0) {
+      const open = this.sql
+        .exec(`SELECT room, started_at, peak FROM sessions WHERE id = ? AND ended_at IS NULL`, sessionId)
+        .toArray()[0];
+      if (!open) return;
       this.sql.exec(`UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL`, now, sessionId);
+      const sent = iftttTrigger(this.env, IFTTT_END_EVENT, [
+        open.room,
+        formatDuration(now - open.started_at),
+        `${open.peak} ${open.peak === 1 ? "person" : "people"}`,
+      ]);
+      this.pending.push(sent);
+      this.ctx.waitUntil(sent);
     }
   }
 
@@ -381,6 +434,7 @@ export class CallDirectory {
     }
     const stillOpen = this.sql.exec(`SELECT COUNT(*) AS c FROM sessions WHERE ended_at IS NULL`).toArray()[0].c;
     if (stillOpen > 0) this.ctx.storage.setAlarm(now + SWEEP_MS);
+    await Promise.allSettled(this.pending.splice(0));
   }
 
   state() {
