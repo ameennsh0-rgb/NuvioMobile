@@ -12,3 +12,12 @@ small always-on-top window with the call pops up, above full-screen apps too.
 Install: download the DMG (Mac) or setup .exe (Windows) from this repo's
 Releases (pre-releases named "Nuvio Call Overlay N"). Unsigned: on a Mac
 right-click the app > Open the first time; allow microphone/camera.
+
+## Built-in audio helper
+
+The app also runs the Nuvio audio helper (127.0.0.1:11471) with its own bundled
+ffmpeg. When a movie in the Nuvio web player has audio the browser cannot play
+(Dolby AC3/EAC3, DTS, TrueHD), the web player asks the helper for a version with
+AAC audio. No Terminal, brew or Node needed. On Apple Silicon Macs the bundled
+ffmpeg runs through Rosetta (macOS offers to install it when needed).
+The app starts at login (switch in the tray menu).

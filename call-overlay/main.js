@@ -8,6 +8,7 @@
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, session, screen, Notification, nativeImage, systemPreferences } = require("electron");
 const fs = require("fs");
+const audioHelper = require("./audioHelper");
 const path = require("path");
 
 const DEFAULT_URL = "https://nuvio-call.ameennsh0.workers.dev";
@@ -24,6 +25,7 @@ let currentRoom = null;
 let dismissed = new Map(); // room -> startedAt that the user closed
 let seenLive = new Map(); // room -> startedAt currently live
 let lastError = "";
+let helperOk = false;
 let config = { name: "", workerUrl: DEFAULT_URL, password: "", autoJoin: false };
 
 const configPath = () => path.join(app.getPath("userData"), "config.json");
@@ -145,6 +147,16 @@ function refreshMenu() {
   }
   items.push(
     { type: "separator" },
+    { label: helperOk ? "Audio helper: running (fixes silent movies)" : "Audio helper: not running", enabled: false },
+    {
+      label: "Start at login",
+      type: "checkbox",
+      checked: config.startAtLogin !== false,
+      click: (item) => {
+        saveConfig({ startAtLogin: item.checked });
+        app.setLoginItemSettings({ openAtLogin: item.checked });
+      },
+    },
     {
       label: "Join automatically",
       type: "checkbox",
@@ -207,6 +219,13 @@ app.whenReady().then(async () => {
     poll();
     return { ok: true };
   });
+  audioHelper.start().then((ok) => {
+    helperOk = ok;
+    refreshMenu();
+  });
+  // Start at login so the helper and the pop-up are always there.
+  if (config.startAtLogin === undefined) saveConfig({ startAtLogin: true });
+  app.setLoginItemSettings({ openAtLogin: config.startAtLogin !== false });
   refreshMenu();
   if (!config.password || !config.name) showSetup();
   poll();
@@ -215,4 +234,7 @@ app.whenReady().then(async () => {
 
 // Keep running in the tray when every window is closed.
 app.on("window-all-closed", () => {});
+app.on("before-quit", () => {
+  audioHelper.stopAll();
+});
 app.on("second-instance", showSetup);
