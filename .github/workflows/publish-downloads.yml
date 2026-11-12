@@ -43,3 +43,4 @@ jobs:
         run: |
           npx --yes wrangler@4 r2 bucket dev-url enable "${BUCKET}" --force || npx --yes wrangler@4 r2 bucket dev-url enable "${BUCKET}" || true
           npx --yes wrangler@4 r2 bucket dev-url get "${BUCKET}"
+# publish 1794503171
