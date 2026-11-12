@@ -294,14 +294,22 @@ export class CallRoom {
   wakeRecorder(body) {
     const { RECORDER_URL, RECORDER_SECRET } = this.env;
     if (!RECORDER_URL || !RECORDER_SECRET) return;
+    // A sleeping free-tier host only finishes booting if the request that woke it
+    // stays open, so wait long (up to 100s) and keep just one such request in flight.
+    const now = Date.now();
+    if (this.wakingSince && now - this.wakingSince < 100_000) return;
+    this.wakingSince = now;
     this.ctx.waitUntil(
       fetch(`${String(RECORDER_URL).replace(/\/+$/, "")}/wake`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-recorder-secret": RECORDER_SECRET },
         body: JSON.stringify(body),
-        // A sleeping free-tier host can take a while to boot; later heartbeats retry.
-        signal: AbortSignal.timeout(25_000),
-      }).catch(() => {}),
+        signal: AbortSignal.timeout(100_000),
+      })
+        .catch(() => {})
+        .finally(() => {
+          this.wakingSince = 0;
+        }),
     );
   }
 
