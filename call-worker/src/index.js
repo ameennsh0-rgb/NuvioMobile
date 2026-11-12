@@ -652,8 +652,8 @@ th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 const fmtTime = ts => new Date(ts).toLocaleString();
 const ago = ts => { const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60)return s+'s'; const m=Math.round(s/60); if(m<60)return m+'m'; return Math.round(m/60)+'h'; };
 const dur = s => { if(s<60)return s+'s'; const m=Math.floor(s/60); if(m<60)return m+'m '+(s%60)+'s'; return Math.floor(m/60)+'h '+(m%60)+'m'; };
-const esc = t => { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
-const sidTag = s => s ? '<code class="sid" title="Click to copy: '+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText('+JSON.stringify(s)+')">'+esc(s)+'</code>' : '<span class="sid">—</span>';
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sidTag = s => s ? '<code class="sid" title="'+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.title)">'+esc(s)+'</code>' : '<span class="sid">—</span>';
 function statCard(n,l){ return '<div class="stat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
 
 let activePc = null, activeStream = null, activeSid = null, statsTimer = null, pollTimer = null;
@@ -786,7 +786,7 @@ function render(d){
     const chips = r.participants.map(p=>{
       const isPlaying = p.sfuSession && activeSid === p.sfuSession;
       const playBtn = p.sfuSession
-        ? '<button type="button" class="playbtn '+(isPlaying?'active':'')+'" onclick="playParticipant('+JSON.stringify(p.sfuSession)+','+JSON.stringify(p.name)+')">'+(isPlaying?'■ Stop':'▶ Play')+'</button>'
+        ? '<button type="button" class="playbtn '+(isPlaying?'active':'')+'" data-sid="'+esc(p.sfuSession)+'" data-name="'+esc(p.name)+'" onclick="playParticipant(this.dataset.sid,this.dataset.name)">'+(isPlaying?'■ Stop':'▶ Play')+'</button>'
         : '';
       return '<div class="chip"><strong>'+esc(p.name)+'</strong>'
         +'<span class="ico '+(p.cameraOn?'':'off')+'">'+(p.cameraOn?'📷':'🚫')+'</span>'
