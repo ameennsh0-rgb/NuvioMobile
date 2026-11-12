@@ -49,17 +49,19 @@ const IFTTT_COOLDOWN_MS = 120_000; // don't re-announce the same room more often
 // Optional phone notification through IFTTT Webhooks. Does nothing unless the
 // IFTTT_KEY secret is set. Values: value1/value2/value3 in the applet text.
 async function iftttTrigger(env, event, values) {
-  if (!env.IFTTT_KEY) return;
+  if (!env.IFTTT_KEY) return { configured: false };
   try {
     const base = env.IFTTT_BASE || "https://maker.ifttt.com";
-    await fetch(`${base}/trigger/${encodeURIComponent(event)}/with/key/${encodeURIComponent(env.IFTTT_KEY)}`, {
+    const res = await fetch(`${base}/trigger/${encodeURIComponent(event)}/with/key/${encodeURIComponent(env.IFTTT_KEY)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value1: values[0] || "", value2: values[1] || "", value3: values[2] || "" }),
       signal: AbortSignal.timeout(10_000),
     });
-  } catch (_) {
-    // A failed notification must never affect the call.
+    return { configured: true, status: res.status, reply: (await res.text()).slice(0, 160) };
+  } catch (error) {
+    // A failed notification must never affect the call; the result is only for /admin/api/notify-test.
+    return { configured: true, error: String(error) };
   }
 }
 
@@ -621,6 +623,12 @@ async function handleAdmin(request, env, url, rest) {
   if (rest[0] === "api" && rest[1] === "sfu" && rest[2] === "sessions") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
     return await proxySfu(request, env, rest.slice(3), true);
+  }
+
+  // Sends a test phone notification now and reports what IFTTT answered.
+  if (rest[0] === "api" && rest[1] === "notify-test") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    return json(await iftttTrigger(env, IFTTT_START_EVENT, ["notify-test", "manual test"]));
   }
 
   // Archived calls: list, upload (archiver) and stream/download (dashboard).
