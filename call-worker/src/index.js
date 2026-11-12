@@ -42,6 +42,7 @@ import { watchPage } from "./watch-app.js";
 const SFU_BASE = "https://rtc.live.cloudflare.com/v1/apps";
 const PEER_TTL_MS = 20_000;
 const DIRECTORY_NAME = "global";
+const WAKE_RETRY_MS = 12_000; // re-ping interval while the recording is not yet confirmed
 const WAKE_EVERY_MS = 60_000; // how often a joined peer re-pings the archiver
 const RECORDING_TTL_MS = 48 * 3600_000; // matches the R2 bucket's 2-day lifecycle rule
 const IFTTT_START_EVENT = "nuvio_call_started";
@@ -212,7 +213,12 @@ export class CallRoom {
       // Wake the archiver when a participant (or a new SFU session) appears, and
       // repeat about once a minute: it ignores sessions it is already recording,
       // and the traffic keeps a sleeping free-tier host awake during the call.
-      if (!previous || previous.sessionId !== peer.sessionId || now - (previous.wokeAt || 0) > WAKE_EVERY_MS) {
+      // Until the archiver confirms it is recording, retry every few seconds so a
+      // cold-starting host or a dropped ping costs seconds, not a minute.
+      const recstate = (await this.ctx.storage.get("recstate")) || {};
+      const confirmed = !!(recstate[peer.sessionId] && recstate[peer.sessionId].recordedAt);
+      const wakeEvery = confirmed || (!peer.mic && !peer.camera) ? WAKE_EVERY_MS : WAKE_RETRY_MS;
+      if (!previous || previous.sessionId !== peer.sessionId || now - (previous.wokeAt || 0) > wakeEvery) {
         peer.wokeAt = now;
         this.wakeRecorder({ room, memberId: peer.memberId, name: peer.name, sessionId: peer.sessionId, tracks: peer.tracks });
       }
