@@ -25,6 +25,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide whether the Android app changed
+        id: filter
+        run: |
+          # Manual runs always build the APK.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch -> build APK."
+            echo "app=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${{ github.event.before }}"
+          # No usable base (first push, force-push, etc.) -> build to be safe.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit -> build APK to be safe."
+            echo "app=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only "$base" "${{ github.sha }}")"
+          echo "Changed files:"; echo "$changed"
+          # Build the APK unless EVERY changed file lives under call-worker/.
+          if printf '%s\n' "$changed" | grep -qvE '^call-worker/'; then
+            echo "Non-worker files changed -> build APK."
+            echo "app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only call-worker/ changed -> skip APK build."
+            echo "app=false" >> "$GITHUB_OUTPUT"
+          fi
+
   call-server:
     name: Deploy call server
     runs-on: ubuntu-latest
@@ -97,7 +133,9 @@ jobs:
 
   build:
     name: Build fullDebug APK (arm64)
-    needs: call-server
+    needs: [detect, call-server]
+    # Skip the slow Android build when only the call worker changed.
+    if: ${{ needs.detect.outputs.app == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
