@@ -299,6 +299,8 @@ export class CallRoom {
     const now = Date.now();
     if (this.wakingSince && now - this.wakingSince < 100_000) return;
     this.wakingSince = now;
+    const logWake = (result) =>
+      this.notifyDirectory("/wakelog", { at: new Date(now).toISOString(), ms: Date.now() - now, room: body.room, name: body.name, ...result });
     this.ctx.waitUntil(
       fetch(`${String(RECORDER_URL).replace(/\/+$/, "")}/wake`, {
         method: "POST",
@@ -306,7 +308,8 @@ export class CallRoom {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(100_000),
       })
-        .catch(() => {})
+        .then((r) => logWake({ status: r.status }))
+        .catch((e) => logWake({ error: String(e).slice(0, 120) }))
         .finally(() => {
           this.wakingSince = 0;
         }),
@@ -385,6 +388,16 @@ export class CallDirectory {
     if (path === "/heartbeat") return this.heartbeat(await request.json());
     if (path === "/leave") return this.leave(await request.json());
     if (path === "/state") return json(this.state());
+    if (path === "/wakelog") {
+      if (request.method === "POST") {
+        const entry = await request.json();
+        const log = (await this.ctx.storage.get("wakelog")) || [];
+        log.push(entry);
+        await this.ctx.storage.put("wakelog", log.slice(-40));
+        return json({ ok: true });
+      }
+      return json({ wakelog: (await this.ctx.storage.get("wakelog")) || [] });
+    }
     if (path === "/reset") {
       this.sql.exec("DELETE FROM participants");
       this.sql.exec("DELETE FROM sessions");
@@ -687,6 +700,13 @@ async function handleAdmin(request, env, url, rest) {
       return json(await iftttTrigger(env, IFTTT_NOT_REC_EVENT, ["notify-test", "test", "this is a test of the not-recording alert"]));
     }
     return json(await iftttTrigger(env, IFTTT_START_EVENT, ["notify-test", "manual test"]));
+  }
+
+  // Last Worker -> recorder wake attempts and what they returned.
+  if (rest[0] === "api" && rest[1] === "wake-log") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    const res = await directoryStub(env).fetch("https://directory/wakelog");
+    return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
   }
 
   // Archiver tells the room it is recording (used for the "not recording" alert).
