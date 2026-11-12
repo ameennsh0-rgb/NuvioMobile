@@ -1,0 +1,26 @@
+{
+  "name": "nuvio-audio-assistant",
+  "version": "0.1.0",
+  "description": "Local helper that converts unsupported movie audio so the Nuvio web player has sound",
+  "main": "main.js",
+  "private": true,
+  "scripts": { "start": "electron ." },
+  "dependencies": { "ffmpeg-static": "^5.2.0" },
+  "devDependencies": { "electron": "^33.2.1", "electron-builder": "^25.1.8" },
+  "build": {
+    "appId": "com.ameen.nuvioaudioassistant",
+    "productName": "Nuvio Audio Assistant",
+    "files": ["main.js", "audioHelper.js", "assets/**"],
+    "asarUnpack": ["node_modules/ffmpeg-static/**"],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": ["dmg"],
+      "identity": null,
+      "icon": "assets/icon.png",
+      "x64ArchFiles": "**/ffmpeg-static/ffmpeg",
+      "extendInfo": { "LSUIElement": true }
+    },
+    "win": { "target": ["nsis"], "icon": "assets/icon.png" },
+    "nsis": { "oneClick": true, "perMachine": false }
+  }
+}
