@@ -1,6 +1,6 @@
 {
   "name": "nuvio-audio-assistant",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local helper that converts unsupported movie audio so the Nuvio web player has sound",
   "main": "main.js",
   "private": true,

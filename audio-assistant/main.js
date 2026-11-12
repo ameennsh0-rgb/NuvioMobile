@@ -16,6 +16,7 @@ if (!app.requestSingleInstanceLock()) {
 let tray = null;
 let running = false;
 let startAtLogin = true;
+let converter = "checking...";
 
 function refreshMenu() {
   tray.setContextMenu(
@@ -24,7 +25,18 @@ function refreshMenu() {
         label: running ? "Audio assistant: running" : "Audio assistant: could not start (port 11471 in use?)",
         enabled: false,
       },
-      { label: "Fixes silent movies in the Nuvio web player", enabled: false },
+      { label: `Converter: ${converter}`, enabled: false },
+      {
+        label: "Test converter now",
+        click: async () => {
+          converter = "checking...";
+          refreshMenu();
+          const r = await audioHelper.selfTest();
+          converter = r.ok ? "working" : `PROBLEM: ${String(r.detail).slice(0, 80)}`;
+          refreshMenu();
+          new Notification({ title: "Nuvio Audio Assistant", body: r.ok ? "Converter works." : `Converter problem: ${r.detail}` }).show();
+        },
+      },
       { type: "separator" },
       {
         label: "Start at login",
@@ -48,6 +60,18 @@ app.whenReady().then(async () => {
   app.setLoginItemSettings({ openAtLogin: true });
   running = await audioHelper.start();
   refreshMenu();
+  audioHelper.selfTest().then((r) => {
+    converter = r.ok ? "working" : `PROBLEM: ${String(r.detail).slice(0, 80)}`;
+    refreshMenu();
+    if (!r.ok) {
+      new Notification({
+        title: "Nuvio Audio Assistant needs attention",
+        body: process.platform === "darwin" && /-86|bad CPU|EBADARCH/i.test(r.detail)
+          ? "Converter cannot run. In Terminal run: softwareupdate --install-rosetta --agree-to-license"
+          : `Converter problem: ${r.detail}`,
+      }).show();
+    }
+  });
   new Notification({
     title: "Nuvio Audio Assistant",
     body: running ? "Running in the menu bar. Silent movies in the web player will be fixed automatically." : "Could not start. Is another copy already running?",
