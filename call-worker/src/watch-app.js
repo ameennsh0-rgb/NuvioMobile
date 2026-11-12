@@ -55,6 +55,10 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
 .ctl{width:44px;height:44px;border-radius:50%;border:0;background:#26262f;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center}
 .ctl.off{background:#e5484d}.ctl.leave{background:#e5484d}
 .status{font-size:12px;color:#8a8a95;text-align:center;padding:4px}
+.callonly .main,.callonly .chat,.callonly .urlbar{display:none}
+.callonly .side{width:100%;border-left:0}
+.callonly .tiles{justify-content:center}
+.callonly .tile{width:46%;height:150px}
 @media(max-width:720px){.stage{flex-direction:column}.side{width:auto;border-left:0;border-top:1px solid #1d1d25;max-height:46%}.tiles{max-height:130px}}
 </style>
 </head>
@@ -146,7 +150,7 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
     wireVideo();
     wireChat();
     // Watch-together sync is the primary feature and runs even if the call fails.
-    connectSync();
+    if (!document.body.classList.contains("callonly")) connectSync();
     setStatus("Starting camera...");
     await startMedia();
     // The video call is best-effort: a camera/SFU problem must not stop the movie.
@@ -467,6 +471,11 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
   // Prefill room from ?room=
   var q = new URLSearchParams(location.search);
   if (q.get("room")) $("room").value = q.get("room");
+  if (q.get("name")) $("name").value = q.get("name");
+  // ?callonly=1 shows only the call (used by the desktop call overlay);
+  // &autojoin=1 joins straight away.
+  if (q.get("callonly")) document.body.classList.add("callonly");
+  if (q.get("autojoin") && q.get("room")) setTimeout(join, 300);
 })();
 </script>
 </body>

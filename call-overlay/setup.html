@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Nuvio Call Overlay</title>
+<style>
+body{margin:0;padding:22px;font:14px system-ui,-apple-system,Segoe UI,sans-serif;background:#15151c;color:#e9e9ee}
+h1{font-size:18px;margin:0 0 4px}p{color:#9a9aa5;margin:0 0 14px;font-size:12.5px}
+label{display:block;font-size:12px;color:#9a9aa5;margin:12px 0 4px}
+input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:9px;border:1px solid #2c2c37;background:#101016;color:#fff;font-size:14px}
+button{margin-top:18px;width:100%;padding:12px;border:0;border-radius:999px;background:#3dd68c;color:#0b0b0f;font-weight:700;font-size:14px;cursor:pointer}
+.row{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px}.row input{width:auto}
+#msg{margin-top:10px;color:#e5484d;font-size:12px;min-height:16px}
+</style></head><body>
+<h1>Nuvio Call Overlay</h1>
+<p>A small call window pops up when a watch-party call starts. It lives in the menu bar (Mac) or system tray (Windows).</p>
+<label>Your name (shown in the call)</label><input id="name" autocomplete="off">
+<label>Call server address</label><input id="url" autocomplete="off">
+<label>Dashboard password (lets the app see when a call starts)</label><input id="pw" type="password" autocomplete="off">
+<div class="row"><input id="auto" type="checkbox"><label for="auto" style="margin:0;color:#e9e9ee;font-size:13px">Join automatically when a call starts</label></div>
+<button id="save">Save</button><div id="msg"></div>
+<script>
+(async()=>{
+  const c=await window.overlay.getConfig();
+  name.value=c.name||"";url.value=c.workerUrl||"";pw.value=c.password||"";auto.checked=!!c.autoJoin;
+  save.onclick=async()=>{
+    if(!name.value.trim()||!pw.value){msg.textContent="Enter your name and the dashboard password.";return;}
+    const r=await window.overlay.saveConfig({name:name.value.trim(),workerUrl:url.value.trim(),password:pw.value,autoJoin:auto.checked});
+    if(r&&r.error){msg.textContent=r.error;}else{msg.style.color="#3dd68c";msg.textContent="Saved. You can close this window.";setTimeout(()=>window.close(),900);}
+  };
+})();
+</script></body></html>

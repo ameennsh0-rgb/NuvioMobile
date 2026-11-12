@@ -1,0 +1,34 @@
+{
+  "name": "nuvio-call-overlay",
+  "version": "0.1.0",
+  "description": "Floating call window that pops up whenever a Nuvio watch-party call starts",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac --universal --publish never",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.ameen.nuviocalloverlay",
+    "productName": "Nuvio Call Overlay",
+    "files": ["main.js", "preload.js", "setup.html", "assets/**"],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": ["dmg"],
+      "identity": null,
+      "icon": "assets/icon.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "The call overlay uses your microphone during watch-party calls.",
+        "NSCameraUsageDescription": "The call overlay uses your camera during watch-party calls.",
+        "LSUIElement": true
+      }
+    },
+    "win": { "target": ["nsis"], "icon": "assets/icon.png" },
+    "nsis": { "oneClick": true, "perMachine": false }
+  }
+}

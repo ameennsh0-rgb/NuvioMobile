@@ -1,0 +1,66 @@
+name: Build Call Overlay
+
+# Builds the small desktop overlay (call-overlay/) as a Mac DMG and a Windows
+# installer and publishes them as a pre-release. Unsigned: on a Mac, right-click
+# the app > Open the first time; on Windows choose "More info > Run anyway".
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build universal DMG
+        working-directory: call-overlay
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --mac --universal --publish never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: call-overlay-mac
+          path: call-overlay/dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build installer
+        working-directory: call-overlay
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --win --publish never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: call-overlay-windows
+          path: call-overlay/dist/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+      - name: Publish pre-release
+        run: |
+          tag="overlay-${GITHUB_RUN_NUMBER}"
+          gh release create "${tag}" out/*/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease \
+            --title "Nuvio Call Overlay ${GITHUB_RUN_NUMBER}" \
+            --notes "Unsigned personal build. Mac: right-click > Open the first time. Windows: More info > Run anyway."
