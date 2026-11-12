@@ -20,6 +20,10 @@ class_name = "WatchSync"
 binding = "RECORDINGS"
 bucket_name = "nuvio-recordings"
 
+# Keep the free-tier recorder awake 08:00-23:00 Dubai (04:00-18:59 UTC), every 7 minutes.
+[triggers]
+crons = ["*/7 4-18 * * *"]
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CallRoom"]

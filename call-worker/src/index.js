@@ -102,6 +102,15 @@ export default {
     return withCors(await this.route(request, env, ctx));
   },
 
+  // Cron: keep the free-tier recorder awake during the day (08:00-23:00 Dubai).
+  // GET /health is held by the host until it has booted. Outside those hours the
+  // host sleeps and a call wakes it (see CallRoom.wakeRecorder).
+  async scheduled(event, env, ctx) {
+    if (!env.RECORDER_URL) return;
+    const base = String(env.RECORDER_URL).replace(/\/+$/, "");
+    ctx.waitUntil(fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) }).catch(() => {}));
+  },
+
   async route(request, env, ctx) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);

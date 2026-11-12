@@ -78,6 +78,7 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
     <span class="muted" id="peerCount"></span>
     <span class="spacer"></span>
     <span class="muted" id="status"></span>
+    <span class="muted" id="stats" style="margin-left:8px"></span>
   </div>
   <div class="stage">
     <div class="main">
@@ -153,6 +154,7 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
       setStatus("Connecting call...");
       await withLock(connectSfu);
       setStatus(mediaNote);
+      startStats();
     }catch(e){
       console.warn("call unavailable", e);
       setStatus("Call unavailable" + (mediaNote ? " - " + mediaNote : ""));
@@ -245,6 +247,28 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
     });
   }
 
+  var lastOut = 0, lastIn = 0, statTimer = null;
+  function startStats(){
+    if (statTimer) return;
+    statTimer = setInterval(async function(){
+      if (!pc || left) return;
+      try{
+        var out = 0, inn = 0;
+        (await pc.getStats()).forEach(function(r){
+          if (r.kind !== "audio") return;
+          if (r.type === "outbound-rtp") out += r.bytesSent || 0;
+          if (r.type === "inbound-rtp") inn += r.bytesReceived || 0;
+        });
+        var up = Math.round((out - lastOut) / 3000), down = Math.round((inn - lastIn) / 3000);
+        lastOut = out; lastIn = inn;
+        var parts = [];
+        parts.push(micOn ? (up > 0 ? "mic sending (" + up + " kB/s)" : "mic NOT sending") : "mic off");
+        if (Object.keys(remotes).length) parts.push(down > 0 ? "hearing others (" + down + " kB/s)" : "no audio from others");
+        $("stats").textContent = parts.join(" | ");
+      }catch(_){}
+    }, 3000);
+  }
+
   async function heartbeat(){
     if (left) return;
     try{
@@ -262,15 +286,24 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
       var p = peers[i];
       if (!p || p.memberId === memberId) continue;
       seen[p.memberId] = true;
-      if (!remotes[p.memberId]){
-        remotes[p.memberId] = { info: p };
+      var r = remotes[p.memberId];
+      // Pull a peer the first time, when its SFU session changed (it rejoined),
+      // or again when the earlier pull got no audio/video (its tracks were not
+      // published yet).
+      var needPull = !r || r.info.sessionId !== p.sessionId ||
+        (r.stream && r.stream.getTracks().length === 0 && Date.now() - r.triedAt > 4000);
+      if (needPull){
+        r = remotes[p.memberId] = { info: p, triedAt: Date.now() };
         try{
           var stream = await pullPeer(p);
-          remotes[p.memberId].stream = stream;
+          r.stream = stream;
           addTile(p, stream, false);
-        }catch(e){ console.warn("pull", e.message); }
+        }catch(e){
+          console.warn("pull", e.message);
+          delete remotes[p.memberId]; // try again on the next heartbeat
+        }
       } else {
-        remotes[p.memberId].info = p;
+        r.info = p;
         updateTile(p);
       }
     }
@@ -301,8 +334,15 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
     nm.className = "nm"; nm.innerHTML = (info.mic === false ? '<span class="mute">&#128263;</span>' : "") + escapeHtml(info.name || "Guest");
     el.appendChild(nm);
     $("tiles").appendChild(el);
-    v.play().catch(function(){});
+    v.play().catch(function(){
+      if (!isSelf) setStatus("Click anywhere to enable sound");
+    });
   }
+  // Browsers block audio until the page is clicked; any click starts every tile.
+  document.addEventListener("click", function(){
+    var vs = document.querySelectorAll("#tiles video");
+    for (var i = 0; i < vs.length; i++){ if (vs[i].paused) vs[i].play().catch(function(){}); }
+  });
   function updateTile(info){
     var el = $(tileId(info.memberId)); if (!el) return;
     var v = el.querySelector("video");
