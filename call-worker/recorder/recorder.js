@@ -56,7 +56,14 @@ const SESSION_ID_RE = /^[A-Za-z0-9_.-]{6,128}$/;
 
 const active = new Map(); // sfu sessionId -> recording state
 
-const log = (...args) => console.log(new Date().toISOString(), ...args);
+// Recent log lines are also kept in memory so they can be read from GET /logs.
+const recentLogs = [];
+const log = (...args) => {
+  const line = [new Date().toISOString(), ...args].join(" ");
+  recentLogs.push(line);
+  if (recentLogs.length > 300) recentLogs.shift();
+  console.log(line);
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- Worker API
@@ -316,16 +323,22 @@ async function runRecording(rec) {
 
   // 1. Wait for the participant to have active tracks on the SFU.
   let names = [];
+  let lastSeen = "no answer";
   for (let i = 0; i < 10 && !names.length; i++) {
+    const t0 = Date.now();
     try {
-      names = activeLocalTracks(await sfu("GET", `/${encodeURIComponent(rec.sessionId)}`)).map((t) => t.trackName);
+      const info = await sfu("GET", `/${encodeURIComponent(rec.sessionId)}`);
+      names = activeLocalTracks(info).map((t) => t.trackName);
+      lastSeen = `tracks=${JSON.stringify((info.tracks || []).map((t) => `${t.trackName}:${t.location}:${t.status}`))}`;
     } catch (e) {
+      lastSeen = `error ${e.status || ""} ${e.message}`.trim();
       if (e.status === 404 && i >= 3) break;
     }
+    log(`[${rec.tag}] look for tracks #${i + 1} (${Date.now() - t0}ms): ${lastSeen}`);
     if (!names.length) await sleep(3000);
   }
   if (!names.length) {
-    log(`[${rec.tag}] no active tracks; nothing to record`);
+    log(`[${rec.tag}] no active tracks; nothing to record (last SFU answer: ${lastSeen})`);
     return;
   }
 
@@ -463,6 +476,11 @@ async function handle(req, res) {
   const url = new URL(req.url, "http://localhost");
   if (req.method === "GET" && url.pathname === "/health") {
     return send(res, 200, { ok: true, active: active.size, uptimeSec: Math.round(process.uptime()) });
+  }
+  if (req.method === "GET" && url.pathname === "/logs") {
+    if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    return res.end(recentLogs.join("\n") + "\n");
   }
   if (req.method === "POST" && url.pathname === "/wake") {
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
