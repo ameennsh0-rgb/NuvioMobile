@@ -114,6 +114,7 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
   var WSBASE = location.origin.replace(/^http/, "ws");
   var room, myName, memberId, sessionId, pc, localStream, ws, presenceTimer, syncTimer;
   var camOn = true, micOn = true, applyingState = false, left = false;
+  var mediaNote = "";
   var remotes = {};
   var lock = Promise.resolve();
   var video;
@@ -151,10 +152,10 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
     try{
       setStatus("Connecting call...");
       await withLock(connectSfu);
-      setStatus("");
+      setStatus(mediaNote);
     }catch(e){
       console.warn("call unavailable", e);
-      setStatus("Call unavailable");
+      setStatus("Call unavailable" + (mediaNote ? " - " + mediaNote : ""));
     }
     try{
       await heartbeat();
@@ -163,13 +164,35 @@ input[type=text]{width:100%;padding:12px 14px;border-radius:10px;border:1px soli
   }
 
   async function startMedia(){
-    try{
-      localStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
-    }catch(e){
-      // Allow joining with no camera/mic (watch only).
+    // Try camera+mic, then mic only, then camera only, so a PC without a
+    // camera still sends audio. Never fail the join; report what happened.
+    var attempts = [
+      { video: { width: 640, height: 480 }, audio: true },
+      { audio: true },
+      { video: { width: 640, height: 480 } }
+    ];
+    var lastErr = null;
+    localStream = null;
+    for (var i = 0; i < attempts.length && !localStream; i++){
+      try{
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("getUserMedia unavailable (needs HTTPS)");
+        localStream = await navigator.mediaDevices.getUserMedia(attempts[i]);
+      }catch(e){
+        lastErr = e;
+        if (e && e.name === "NotAllowedError") break; // user/browser blocked it; retrying won't help
+      }
+    }
+    if (!localStream){
       localStream = new MediaStream();
       camOn = false; micOn = false;
+      mediaNote = "No mic/camera: " + ((lastErr && (lastErr.name || lastErr.message)) || "unknown") + ". Joined watch-only; nothing is sent or recorded.";
+    }else{
+      micOn = localStream.getAudioTracks().length > 0;
+      camOn = localStream.getVideoTracks().length > 0;
+      if (!camOn && micOn) mediaNote = "No camera found. Joined with microphone only.";
+      else if (!micOn && camOn) mediaNote = "No microphone found. Joined with camera only.";
     }
+    setStatus(mediaNote);
     addTile({ memberId: memberId, name: myName + " (you)", camera: camOn, mic: micOn }, localStream, true);
   }
 
