@@ -294,25 +294,39 @@ export class CallRoom {
   wakeRecorder(body) {
     const { RECORDER_URL, RECORDER_SECRET } = this.env;
     if (!RECORDER_URL || !RECORDER_SECRET) return;
-    // A sleeping free-tier host only finishes booting if the request that woke it
-    // stays open, so wait long (up to 100s) and keep just one such request in flight.
+    // A sleeping free-tier host answers a POST with an instant 502 and does NOT
+    // boot, but it does boot (and holds the request) for a GET. So first GET
+    // /health, which waits for the host to come up, then POST /wake.
+    // Only one such attempt is in flight at a time.
     const now = Date.now();
     if (this.wakingSince && now - this.wakingSince < 100_000) return;
     this.wakingSince = now;
+    const base = String(RECORDER_URL).replace(/\/+$/, "");
     const logWake = (result) =>
       this.notifyDirectory("/wakelog", { at: new Date(now).toISOString(), ms: Date.now() - now, room: body.room, name: body.name, ...result });
     this.ctx.waitUntil(
-      fetch(`${String(RECORDER_URL).replace(/\/+$/, "")}/wake`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-recorder-secret": RECORDER_SECRET },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(100_000),
-      })
-        .then((r) => logWake({ status: r.status }))
-        .catch((e) => logWake({ error: String(e).slice(0, 120) }))
-        .finally(() => {
-          this.wakingSince = 0;
-        }),
+      (async () => {
+        let health = 0;
+        try {
+          health = (await fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) })).status;
+        } catch (e) {
+          logWake({ error: "health: " + String(e).slice(0, 100) });
+          return;
+        }
+        try {
+          const r = await fetch(`${base}/wake`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-recorder-secret": RECORDER_SECRET },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(20_000),
+          });
+          logWake({ health, status: r.status });
+        } catch (e) {
+          logWake({ health, error: String(e).slice(0, 100) });
+        }
+      })().finally(() => {
+        this.wakingSince = 0;
+      }),
     );
   }
 
