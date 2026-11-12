@@ -1,0 +1,45 @@
+name: Publish downloads to Cloudflare R2
+
+# Copies the latest Audio Assistant installers from the GitHub release into a
+# Cloudflare R2 bucket with a public link (faster, no GitHub login needed).
+# Runs when this file changes; also manually.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [video-chat]
+    paths:
+      - .github/workflows/publish-downloads.yml
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+      BUCKET: nuvio-downloads
+    steps:
+      - name: Download the installers from the GitHub release
+        run: |
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=30" -q '[.[]|select(.tag_name|startswith("assistant-"))][0].tag_name')
+          echo "Using release ${tag}"
+          mkdir dl
+          gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" --dir dl
+          cd dl
+          mv Nuvio.Audio.Assistant-*-universal.dmg Nuvio-Audio-Assistant-Mac.dmg
+          mv Nuvio.Audio.Assistant.Setup.*.exe Nuvio-Audio-Assistant-Windows.exe
+          ls -lh
+
+      - name: Create the bucket (ok if it exists)
+        run: npx --yes wrangler@4 r2 bucket create "${BUCKET}" || echo "bucket exists or could not be created"
+
+      - name: Upload
+        run: |
+          npx --yes wrangler@4 r2 object put "${BUCKET}/Nuvio-Audio-Assistant-Mac.dmg" --file dl/Nuvio-Audio-Assistant-Mac.dmg --content-type application/x-apple-diskimage --remote
+          npx --yes wrangler@4 r2 object put "${BUCKET}/Nuvio-Audio-Assistant-Windows.exe" --file dl/Nuvio-Audio-Assistant-Windows.exe --content-type application/vnd.microsoft.portable-executable --remote
+
+      - name: Turn on the public link
+        run: |
+          npx --yes wrangler@4 r2 bucket dev-url enable "${BUCKET}" --force || npx --yes wrangler@4 r2 bucket dev-url enable "${BUCKET}" || true
+          npx --yes wrangler@4 r2 bucket dev-url get "${BUCKET}"
