@@ -22,12 +22,22 @@
 //   POST /admin/logout                         -> clear the dashboard cookie
 //   GET  /admin/api/state                      -> {live, history, stats}
 //   *    /admin/api/sfu/sessions/...           -> cookie-authed SFU proxy for dashboard Play
+//   GET  /admin/api/recordings                 -> list of archived calls (last 48h)
+//   PUT  /admin/api/recordings/:key            -> archiver uploads a .webm part
+//   GET  /admin/api/recordings/:key            -> stream a recording (Range ok); ?download=1 to save
+//
+// The /admin/api/sfu and /admin/api/recordings routes accept either the dashboard
+// cookie or an `x-recorder-secret` header equal to RECORDER_SECRET (used by the
+// archiver service in recorder/). If RECORDER_URL and RECORDER_SECRET are set,
+// joining a room also pings the archiver (POST /wake) so it starts recording.
 
 import { watchPage } from "./watch-app.js";
 
 const SFU_BASE = "https://rtc.live.cloudflare.com/v1/apps";
 const PEER_TTL_MS = 20_000;
 const DIRECTORY_NAME = "global";
+const WAKE_EVERY_MS = 60_000; // how often a joined peer re-pings the archiver
+const RECORDING_TTL_MS = 48 * 3600_000; // matches the R2 bucket's 2-day lifecycle rule
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -147,6 +157,8 @@ export class CallRoom {
     if (request.method === "POST" && action === "join") {
       const body = await request.json();
       if (!body.memberId || !body.sessionId) return json({ error: "bad_request" }, 400);
+      const now = Date.now();
+      const previous = peers[body.memberId];
       const peer = {
         memberId: String(body.memberId),
         name: String(body.name || "Guest").slice(0, 60),
@@ -154,8 +166,16 @@ export class CallRoom {
         tracks: Array.isArray(body.tracks) ? body.tracks.map(String).slice(0, 4) : [],
         camera: body.camera !== false,
         mic: body.mic !== false,
-        seenAt: Date.now(),
+        seenAt: now,
+        wokeAt: previous ? previous.wokeAt : undefined,
       };
+      // Wake the archiver when a participant (or a new SFU session) appears, and
+      // repeat about once a minute: it ignores sessions it is already recording,
+      // and the traffic keeps a sleeping free-tier host awake during the call.
+      if (!previous || previous.sessionId !== peer.sessionId || now - (previous.wokeAt || 0) > WAKE_EVERY_MS) {
+        peer.wokeAt = now;
+        this.wakeRecorder({ room, memberId: peer.memberId, name: peer.name, sessionId: peer.sessionId, tracks: peer.tracks });
+      }
       peers[body.memberId] = peer;
       await this.ctx.storage.put("peers", peers);
       // Record metadata for the dashboard (never any media).
@@ -179,6 +199,20 @@ export class CallRoom {
     }
 
     return json({ error: "not_found" }, 404);
+  }
+
+  wakeRecorder(body) {
+    const { RECORDER_URL, RECORDER_SECRET } = this.env;
+    if (!RECORDER_URL || !RECORDER_SECRET) return;
+    this.ctx.waitUntil(
+      fetch(`${String(RECORDER_URL).replace(/\/+$/, "")}/wake`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-recorder-secret": RECORDER_SECRET },
+        body: JSON.stringify(body),
+        // A sleeping free-tier host can take a while to boot; later heartbeats retry.
+        signal: AbortSignal.timeout(25_000),
+      }).catch(() => {}),
+    );
   }
 
   notifyDirectory(path, body) {
@@ -524,16 +558,136 @@ async function handleAdmin(request, env, url, rest) {
     });
   }
 
-  // Cookie-authenticated SFU proxy for the /admin Play button (includes GET /sessions/:id)
+  // The archiver service (recorder/) has no browser cookie; it sends a shared secret instead.
+  const viaRecorder =
+    !!env.RECORDER_SECRET && timingSafeEqual(request.headers.get("x-recorder-secret") || "", env.RECORDER_SECRET);
+  const allowed = authed || viaRecorder;
+
+  // SFU proxy for the /admin Play button and the archiver (includes GET /sessions/:id)
   if (rest[0] === "api" && rest[1] === "sfu" && rest[2] === "sessions") {
-    if (!authed) return json({ error: "unauthorized" }, 401);
+    if (!allowed) return json({ error: "unauthorized" }, 401);
     return await proxySfu(request, env, rest.slice(3), true);
+  }
+
+  // Archived calls: list, upload (archiver) and stream/download (dashboard).
+  if (rest[0] === "api" && rest[1] === "recordings") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    return await handleRecordings(request, env, url, rest.slice(2));
   }
 
   if (rest.length === 0) {
     return htmlResponse(authed ? dashboardPage() : loginPage());
   }
   return json({ error: "not_found" }, 404);
+}
+
+// ---- Recordings (R2) ----
+
+const RECORDING_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.webm$/;
+
+async function handleRecordings(request, env, url, rest) {
+  if (!env.RECORDINGS) return json({ error: "recordings_not_configured" }, 503);
+
+  if (rest.length === 0) {
+    if (request.method !== "GET") return json({ error: "not_found" }, 404);
+    // R2 lifecycle deletion can lag, so also hide anything older than 48 hours.
+    const cutoff = Date.now() - RECORDING_TTL_MS;
+    const recordings = [];
+    let cursor;
+    for (let page = 0; page < 10; page++) {
+      const listing = await env.RECORDINGS.list({ limit: 1000, cursor });
+      for (const o of listing.objects) {
+        const uploaded = o.uploaded.getTime();
+        if (uploaded >= cutoff) {
+          recordings.push({ key: o.key, size: o.size, uploaded, expiresAt: uploaded + RECORDING_TTL_MS });
+        }
+      }
+      if (!listing.truncated) break;
+      cursor = listing.cursor;
+    }
+    recordings.sort((a, b) => b.uploaded - a.uploaded);
+    return new Response(JSON.stringify({ recordings }), {
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+    });
+  }
+
+  if (rest.length !== 1) return json({ error: "not_found" }, 404);
+  let key;
+  try {
+    key = decodeURIComponent(rest[0]);
+  } catch (_) {
+    return json({ error: "bad_key" }, 400);
+  }
+  if (!RECORDING_KEY_RE.test(key)) return json({ error: "bad_key" }, 400);
+
+  if (request.method === "PUT") {
+    // R2 needs a stream of known length, so the uploader must send Content-Length.
+    const length = Number(request.headers.get("content-length"));
+    if (!request.body || !Number.isFinite(length) || length <= 0) {
+      return json({ error: "content_length_required" }, 411);
+    }
+    await env.RECORDINGS.put(key, request.body, { httpMetadata: { contentType: "video/webm" } });
+    return json({ ok: true, key, size: length });
+  }
+
+  if (request.method === "GET" || request.method === "HEAD") {
+    const head = await env.RECORDINGS.head(key);
+    if (!head) return json({ error: "not_found" }, 404);
+    const size = head.size;
+    const headers = new Headers({
+      "content-type": "video/webm",
+      "accept-ranges": "bytes",
+      etag: head.httpEtag,
+      "cache-control": "private, max-age=3600",
+    });
+    if (url.searchParams.get("download") === "1") {
+      headers.set("content-disposition", `attachment; filename="${key}"`);
+    }
+
+    // <video> seeks with Range requests, so answer them with 206 Partial Content.
+    const range = parseRange(request.headers.get("range"), size);
+    if (range === "invalid") {
+      headers.set("content-range", `bytes */${size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (range) {
+      const length = range.end - range.start + 1;
+      headers.set("content-range", `bytes ${range.start}-${range.end}/${size}`);
+      headers.set("content-length", String(length));
+      if (request.method === "HEAD") return new Response(null, { status: 206, headers });
+      const part = await env.RECORDINGS.get(key, { range: { offset: range.start, length } });
+      if (!part) return json({ error: "not_found" }, 404);
+      return new Response(part.body, { status: 206, headers });
+    }
+    headers.set("content-length", String(size));
+    if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+    const full = await env.RECORDINGS.get(key);
+    if (!full) return json({ error: "not_found" }, 404);
+    return new Response(full.body, { status: 200, headers });
+  }
+
+  return json({ error: "not_found" }, 404);
+}
+
+// Parses a single "bytes=a-b" range. Returns {start,end} (inclusive), null when
+// there is no usable Range header (serve the whole file), or "invalid" (416).
+function parseRange(header, size) {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  let start;
+  let end;
+  if (m[1] === "") {
+    const suffix = Number(m[2]);
+    if (!suffix) return "invalid";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
+  }
+  if (start >= size || start > end) return "invalid";
+  return { start, end };
 }
 
 function cookieValue(request, name) {
@@ -622,7 +776,12 @@ video#dash-video{width:100%;max-height:420px;background:#000;border-radius:10px}
 .phist{display:flex;flex-direction:column;gap:6px}.phist .nm{color:#e9e9ee}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #23232c;vertical-align:top}
 th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
-.note{font-size:12px;color:#7a7a85;margin-top:8px}.topbtn{font-size:13px}</style></head><body><div class="wrap">
+.note{font-size:12px;color:#7a7a85;margin-top:8px}.topbtn{font-size:13px}
+.rec{padding:10px 0;border-bottom:1px solid #23232c}.rec:last-child{border-bottom:0}
+.rec-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.rec-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
+.rec-video video{width:100%;max-height:420px;background:#000;border-radius:10px;margin-top:10px}
+a.btn-sm{text-decoration:none;display:inline-block}</style></head><body><div class="wrap">
 <header><h1>Call dashboard</h1><a class="topbtn" href="/admin/logout">Sign out</a></header>
 <div class="muted small">Live room &amp; participant monitor. Click <strong>Play</strong> beside any live participant to pull &amp; record their WebRTC stream.</div>
 <div class="stats" id="stats"></div>
@@ -647,13 +806,21 @@ th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 <h2>Live now</h2><div id="live"><div class="empty">Loading…</div></div>
 <h2>History</h2><div id="history" class="card"><div class="empty">Loading…</div></div>
 <div class="note">Updates every 4 seconds. History keeps the last 100 calls.</div>
+
+<h2>Recordings (Last 48h) <button type="button" class="btn-sm" onclick="loadRecordings(true)" style="text-transform:none;letter-spacing:0">Refresh</button></h2>
+<div id="recs" class="card"><div class="empty">Loading…</div></div>
+<div class="note">Calls are archived automatically and deleted 48 hours after upload. Longer calls are saved in several parts.</div>
 </div>
 <script>
 const fmtTime = ts => new Date(ts).toLocaleString();
 const ago = ts => { const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60)return s+'s'; const m=Math.round(s/60); if(m<60)return m+'m'; return Math.round(m/60)+'h'; };
 const dur = s => { if(s<60)return s+'s'; const m=Math.floor(s/60); if(m<60)return m+'m '+(s%60)+'s'; return Math.floor(m/60)+'h '+(m%60)+'m'; };
 const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const sidTag = s => s ? '<code class="sid" title="'+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.title)">'+esc(s)+'</code>' : '<span class="sid">—</span>';
+const sidTag = s => s ? '<code class="sid" data-sid="'+esc(s)+'" title="Click to copy" onclick="copySid(this)">'+esc(s)+'</code>' : '<span class="sid">—</span>';
+function copySid(el){ try{ navigator.clipboard && navigator.clipboard.writeText(el.dataset.sid); }catch(e){} }
+const fmtSize = b => b>=1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
+const timeLeft = ts => { const m=Math.max(0,Math.round((ts-Date.now())/60000)); return m<60 ? m+'m' : Math.floor(m/60)+'h '+(m%60)+'m'; };
+const recUrl = (k, dl) => '/admin/api/recordings/' + encodeURIComponent(k) + (dl ? '?download=1' : '');
 function statCard(n,l){ return '<div class="stat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
 
 let activePc = null, activeStream = null, activeSid = null, statsTimer = null, pollTimer = null;
@@ -812,6 +979,42 @@ async function tick(){
   catch(e){}
 }
 tick(); setInterval(tick, 4000);
+
+let openRec = null;
+async function loadRecordings(force){
+  if(!force && openRec) return; // keep the list (and the playing video) as is
+  const box = document.getElementById('recs');
+  try{
+    const r = await fetch('/admin/api/recordings', { cache:'no-store' });
+    if(r.status===401){ location.reload(); return; }
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok){
+      box.innerHTML = '<div class="empty">'+(d.error==='recordings_not_configured' ? 'Recording storage is not set up on this Worker yet.' : 'Could not load recordings.')+'</div>';
+      return;
+    }
+    openRec = null;
+    if(!d.recordings.length){ box.innerHTML = '<div class="empty">No recordings in the last 48 hours.</div>'; return; }
+    box.innerHTML = d.recordings.map(x =>
+      '<div class="rec" data-key="'+esc(x.key)+'"><div class="rec-row"><div><span class="rec-name">'+esc(x.key)+'</span>'
+      +'<div class="muted small">'+fmtTime(x.uploaded)+' · '+fmtSize(x.size)+' · expires in '+timeLeft(x.expiresAt)+'</div></div>'
+      +'<div class="player-actions"><button type="button" class="btn-sm watch" onclick="toggleRecVideo(this)">▶ Watch</button>'
+      +'<a class="btn-sm" href="'+recUrl(x.key,true)+'">Download</a></div></div><div class="rec-video"></div></div>'
+    ).join('');
+  }catch(e){}
+}
+function toggleRecVideo(btn){
+  const row = btn.closest('.rec'), holder = row.querySelector('.rec-video');
+  const wasOpen = !!holder.firstChild;
+  document.querySelectorAll('#recs .rec-video').forEach(h => { h.innerHTML = ''; h.closest('.rec').querySelector('.watch').textContent = '▶ Watch'; });
+  openRec = null;
+  if(wasOpen) return;
+  const v = document.createElement('video');
+  v.controls = true; v.autoplay = true; v.playsInline = true; v.preload = 'metadata'; v.src = recUrl(row.dataset.key);
+  holder.appendChild(v);
+  btn.textContent = '■ Close';
+  openRec = row.dataset.key;
+}
+loadRecordings(true); setInterval(() => loadRecordings(false), 30000);
 </script></body></html>`;
 }
 

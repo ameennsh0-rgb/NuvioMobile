@@ -1,0 +1,17 @@
+{
+  "name": "nuvio-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Archives Cloudflare Realtime SFU call sessions to R2 (via the nuvio-call Worker) for 48-hour replay",
+  "type": "module",
+  "main": "recorder.js",
+  "scripts": {
+    "start": "node recorder.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "werift": "^0.27.0"
+  }
+}

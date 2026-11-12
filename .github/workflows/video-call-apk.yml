@@ -11,6 +11,9 @@ name: Build Video Call APK
 #   CLOUDFLARE_API_TOKEN           API token allowed to edit Workers (to deploy the call server)
 #   CLOUDFLARE_ACCOUNT_ID          your Cloudflare account ID
 #   CALL_SERVER_URL                optional: use an already-deployed call server instead
+#   RECORDER_URL / RECORDER_SECRET optional: call archiver (call-worker/recorder) that records to R2.
+#                                  Worker secrets persist across deploys, so these can also be set
+#                                  once with `wrangler secret put` instead.
 
 on:
   push:
@@ -85,6 +88,8 @@ jobs:
           CF_REALTIME_APP_ID: ${{ secrets.CF_REALTIME_APP_ID }}
           CF_REALTIME_APP_SECRET: ${{ secrets.CF_REALTIME_APP_SECRET }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          RECORDER_URL: ${{ secrets.RECORDER_URL }}
+          RECORDER_SECRET: ${{ secrets.RECORDER_SECRET }}
           MANUAL_URL: ${{ secrets.CALL_SERVER_URL }}
         run: |
           if [ -n "$MANUAL_URL" ]; then
@@ -107,6 +112,11 @@ jobs:
             printf '%s' "$DASHBOARD_PASSWORD" | npx --yes wrangler@4 secret put DASHBOARD_PASSWORD
           else
             echo "::warning::DASHBOARD_PASSWORD secret not set; the /admin dashboard stays locked until you add it."
+          fi
+          # Optional call archiver. Without both values the Worker simply never pings it.
+          if [ -n "$RECORDER_URL" ] && [ -n "$RECORDER_SECRET" ]; then
+            printf '%s' "$RECORDER_URL" | npx --yes wrangler@4 secret put RECORDER_URL
+            printf '%s' "$RECORDER_SECRET" | npx --yes wrangler@4 secret put RECORDER_SECRET
           fi
           url=$(grep -oE 'https://nuvio-call\.[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           if [ -z "$url" ]; then
