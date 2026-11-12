@@ -6,21 +6,22 @@
 //
 // It also records session metadata (who was in which room, when, for how long)
 // so the owner can see — on the /admin dashboard — whether calls are live and
-// what happened before. The dashboard shows names, counts and timing only; it
-// never pulls anyone's camera or microphone.
+// what happened before, and optionally click Play beside any live participant
+// to pull and watch/record their WebRTC stream via the authenticated /admin/api/sfu proxy.
 //
 // Routes (all JSON unless noted):
-//   POST /sfu/sessions/new                      -> SFU: new session
-//   POST /sfu/sessions/:id/tracks/new           -> SFU: push or pull tracks
-//   PUT  /sfu/sessions/:id/renegotiate          -> SFU: send an answer
-//   PUT  /sfu/sessions/:id/tracks/close         -> SFU: close tracks
+//   POST /sfu/sessions/new                     -> SFU: new session
+//   POST /sfu/sessions/:id/tracks/new          -> SFU: push or pull tracks
+//   PUT  /sfu/sessions/:id/renegotiate         -> SFU: send an answer
+//   PUT  /sfu/sessions/:id/tracks/close        -> SFU: close tracks
 //   POST /rooms/:room/join   {memberId, name, sessionId, tracks:[...]}
 //   POST /rooms/:room/leave  {memberId}
-//   GET  /rooms/:room                           -> {peers:[...]}
-//   GET  /admin                                 -> dashboard (HTML, password)
-//   POST /admin/login                           -> set the dashboard cookie
-//   POST /admin/logout                          -> clear the dashboard cookie
-//   GET  /admin/api/state                       -> {live, history, stats}
+//   GET  /rooms/:room                          -> {peers:[...]}
+//   GET  /admin                                -> dashboard (HTML, password)
+//   POST /admin/login                          -> set the dashboard cookie
+//   POST /admin/logout                         -> clear the dashboard cookie
+//   GET  /admin/api/state                      -> {live, history, stats}
+//   *    /admin/api/sfu/sessions/...           -> cookie-authed SFU proxy for dashboard Play
 
 import { watchPage } from "./watch-app.js";
 
@@ -94,8 +95,9 @@ export default {
   },
 };
 
-async function proxySfu(request, env, rest) {
+async function proxySfu(request, env, rest, allowGetSession = false) {
   const allowed =
+    (allowGetSession && rest.length === 1 && request.method === "GET") ||
     (rest.length === 1 && rest[0] === "new" && request.method === "POST") ||
     (rest.length === 3 && rest[1] === "tracks" && rest[2] === "new" && request.method === "POST") ||
     (rest.length === 2 && rest[1] === "renegotiate" && request.method === "PUT") ||
@@ -522,6 +524,12 @@ async function handleAdmin(request, env, url, rest) {
     });
   }
 
+  // Cookie-authenticated SFU proxy for the /admin Play button (includes GET /sessions/:id)
+  if (rest[0] === "api" && rest[1] === "sfu" && rest[2] === "sessions") {
+    if (!authed) return json({ error: "unauthorized" }, 401);
+    return await proxySfu(request, env, rest.slice(3), true);
+  }
+
   if (rest.length === 0) {
     return htmlResponse(authed ? dashboardPage() : loginPage());
   }
@@ -561,7 +569,7 @@ function htmlResponse(body, status = 200) {
 
 function shellStyles() {
   return `*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d0d11;color:#e9e9ee}
-a{color:#3dd68c}.wrap{max-width:860px;margin:0 auto;padding:20px 16px 60px}`;
+a{color:#3dd68c}.wrap{max-width:960px;margin:0 auto;padding:20px 16px 60px}`;
 }
 
 function notConfiguredPage() {
@@ -602,16 +610,43 @@ h2{font-size:15px;color:#c7c7d1;margin:26px 0 10px;text-transform:uppercase;lett
 .chip{background:#23232c;border-radius:10px;padding:8px 12px;font-size:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .ico{font-size:12px;opacity:.65}.ico.off{opacity:1;filter:grayscale(1)}
 .sid{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#c7c7d1;background:#17171d;padding:2px 6px;border-radius:6px;word-break:break-all;user-select:all;cursor:copy}
+.playbtn{margin-left:auto;border:0;border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;background:#3dd68c;color:#0d0d11}
+.playbtn.active{background:#e5484d;color:#fff}
+.player-card{display:none;background:#17171d;border:1px solid #3dd68c;border-radius:14px;padding:14px 16px;margin:14px 0}
+.player-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.player-meta{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#9a9aa5}
+.player-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.btn-sm{border:1px solid #333;background:#23232c;color:#e9e9ee;border-radius:8px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-stop{border-color:#e5484d;background:rgba(229,72,77,.15);color:#ff8b90}
+video#dash-video{width:100%;max-height:420px;background:#000;border-radius:10px}
 .phist{display:flex;flex-direction:column;gap:6px}.phist .nm{color:#e9e9ee}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #23232c;vertical-align:top}
 th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 .note{font-size:12px;color:#7a7a85;margin-top:8px}.topbtn{font-size:13px}</style></head><body><div class="wrap">
 <header><h1>Call dashboard</h1><a class="topbtn" href="/admin/logout">Sign out</a></header>
-<div class="muted small">Session details only — names, timing and live status. No camera or microphone is ever shown here.</div>
+<div class="muted small">Live room &amp; participant monitor. Click <strong>Play</strong> beside any live participant to pull &amp; record their WebRTC stream.</div>
 <div class="stats" id="stats"></div>
+
+<div class="player-card" id="player-card">
+  <div class="player-head">
+    <div>
+      <strong id="player-title">Streaming</strong>
+      <div class="player-meta" id="player-meta">Connecting...</div>
+    </div>
+    <div class="player-actions">
+      <label class="small muted" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+        <input type="checkbox" id="auto-rec" checked> Auto-record (.webm)
+      </label>
+      <button type="button" class="btn-sm" id="rec-btn" onclick="toggleRec()">Start Rec</button>
+      <button type="button" class="btn-sm btn-stop" onclick="stopDashStream()">Disconnect</button>
+    </div>
+  </div>
+  <video id="dash-video" autoplay playsinline controls></video>
+</div>
+
 <h2>Live now</h2><div id="live"><div class="empty">Loading…</div></div>
 <h2>History</h2><div id="history" class="card"><div class="empty">Loading…</div></div>
-<div class="note">Updates every few seconds. History keeps the last 100 calls.</div>
+<div class="note">Updates every 4 seconds. History keeps the last 100 calls.</div>
 </div>
 <script>
 const fmtTime = ts => new Date(ts).toLocaleString();
@@ -620,17 +655,145 @@ const dur = s => { if(s<60)return s+'s'; const m=Math.floor(s/60); if(m<60)retur
 const esc = t => { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
 const sidTag = s => s ? '<code class="sid" title="Click to copy: '+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText('+JSON.stringify(s)+')">'+esc(s)+'</code>' : '<span class="sid">—</span>';
 function statCard(n,l){ return '<div class="stat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
+
+let activePc = null, activeStream = null, activeSid = null, statsTimer = null, pollTimer = null;
+let recorder = null, recChunks = [], lastBytes = 0, lastAt = 0, gotMedia = false, stallSec = 0;
+
+async function sfuCall(method, path, body){
+  const r = await fetch('/admin/api/sfu/sessions' + path, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  });
+  const data = await r.json().catch(() => ({}));
+  if(!r.ok || data.errorCode) throw Object.assign(new Error(data.errorDescription || data.error || ('HTTP '+r.status)), { status: r.status });
+  return data;
+}
+
+async function waitIce(pc){
+  if(pc.iceGatheringState==='complete') return;
+  await new Promise(res => {
+    const t = setTimeout(res, 1500);
+    pc.addEventListener('icegatheringstatechange', function f(){
+      if(pc.iceGatheringState==='complete'){ clearTimeout(t); pc.removeEventListener('icegatheringstatechange', f); res(); }
+    });
+  });
+}
+
+function toggleRec(){
+  if(recorder && recorder.state==='recording'){ recorder.stop(); return; }
+  if(!activeStream || !activeStream.getTracks().length) return;
+  recChunks = [];
+  const mime = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+  recorder = mime ? new MediaRecorder(activeStream, { mimeType: mime }) : new MediaRecorder(activeStream);
+  recorder.ondataavailable = e => { if(e.data && e.data.size>0) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    document.getElementById('rec-btn').textContent = 'Start Rec';
+    if(!recChunks.length) return;
+    const blob = new Blob(recChunks, { type: recChunks[0].type || 'video/webm' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'nuvio-' + (activeSid||'call').slice(0,10) + '-' + new Date().toISOString().replace(/[:.]/g,'-').slice(0,19) + '.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  recorder.start(1000);
+  document.getElementById('rec-btn').textContent = 'Stop Rec';
+}
+
+function stopDashStream(){
+  if(recorder && recorder.state==='recording') recorder.stop();
+  clearInterval(statsTimer); clearInterval(pollTimer);
+  if(activePc){ activePc.close(); activePc = null; }
+  activeStream = null; activeSid = null; gotMedia = false; stallSec = 0;
+  document.getElementById('dash-video').srcObject = null;
+  document.getElementById('player-card').style.display = 'none';
+  tick();
+}
+
+async function playParticipant(sid, name){
+  if(activeSid === sid){ stopDashStream(); return; }
+  stopDashStream();
+  activeSid = sid;
+  const card = document.getElementById('player-card');
+  const meta = document.getElementById('player-meta');
+  card.style.display = 'block';
+  document.getElementById('player-title').textContent = 'Streaming: ' + name;
+  meta.textContent = 'Detecting active tracks on ' + sid + '...';
+  try{
+    const info = await sfuCall('GET', '/' + encodeURIComponent(sid));
+    const tracks = (info.tracks || []).filter(t => t.location==='local' && t.status==='active' && t.trackName).map(t => t.trackName);
+    if(!tracks.length) throw new Error('No active local tracks found on this session.');
+
+    const pc = new RTCPeerConnection({ iceServers:[{ urls:'stun:stun.cloudflare.com:3478' }], bundlePolicy:'max-bundle' });
+    activePc = pc;
+    activeStream = new MediaStream();
+    document.getElementById('dash-video').srcObject = activeStream;
+
+    pc.ontrack = e => {
+      activeStream.addTrack(e.track);
+      if(document.getElementById('auto-rec').checked && (!recorder || recorder.state!=='recording')) toggleRec();
+    };
+
+    const { sessionId: subId } = await sfuCall('POST', '/new');
+    const pull = await sfuCall('POST', '/' + encodeURIComponent(subId) + '/tracks/new', {
+      tracks: tracks.map(trackName => ({ location:'remote', sessionId:sid, trackName }))
+    });
+    if(pull.sessionDescription){
+      await pc.setRemoteDescription(new RTCSessionDescription(pull.sessionDescription));
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      await waitIce(pc);
+      await sfuCall('PUT', '/' + encodeURIComponent(subId) + '/renegotiate', {
+        sessionDescription: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+      });
+    }
+
+    lastBytes = 0; lastAt = performance.now(); gotMedia = false; stallSec = 0;
+    statsTimer = setInterval(async () => {
+      if(!activePc) return;
+      const st = await activePc.getStats();
+      let b = 0; st.forEach(r => { if(r.type==='inbound-rtp' && typeof r.bytesReceived==='number') b += r.bytesReceived; });
+      const now = performance.now(), dt = (now - lastAt)/1000;
+      if(dt > 0){
+        const db = b - lastBytes, kbps = Math.max(0, Math.round((db*8)/1000/dt));
+        if(db > 0){ gotMedia = true; stallSec = 0; } else if(gotMedia){ stallSec += dt; }
+        meta.textContent = 'LIVE · ' + tracks.join(', ') + ' · ' + kbps + ' kbps · ICE: ' + activePc.connectionState;
+        if(stallSec >= 10){ stopDashStream(); }
+      }
+      lastBytes = b; lastAt = now;
+    }, 1500);
+
+    pollTimer = setInterval(async () => {
+      if(!activeSid) return;
+      try{
+        const s = await sfuCall('GET', '/' + encodeURIComponent(activeSid));
+        const alive = (s.tracks || []).some(t => t.location==='local' && t.status==='active');
+        if(!alive) stopDashStream();
+      }catch(e){ if(e.status===404) stopDashStream(); }
+    }, 3000);
+  }catch(err){
+    meta.textContent = 'Error: ' + err.message;
+  }
+  tick();
+}
+
 function render(d){
   document.getElementById('stats').innerHTML =
     statCard(d.stats.liveRooms,'live calls') + statCard(d.stats.livePeople,'people on now') + statCard(d.stats.totalCalls,'calls all-time');
   const live = document.getElementById('live');
   if(!d.live.length){ live.innerHTML='<div class="empty">No calls right now.</div>'; }
   else { live.innerHTML = d.live.map(r=>{
-    const chips = r.participants.map(p=>'<div class="chip"><strong>'+esc(p.name)+'</strong>'
-      +'<span class="ico '+(p.cameraOn?'':'off')+'">'+(p.cameraOn?'📷':'🚫')+'</span>'
-      +'<span class="ico '+(p.micOn?'':'off')+'">'+(p.micOn?'🎙️':'🔇')+'</span>'
-      +'<span class="muted small">joined '+fmtTime(p.joinedAt)+'</span>'
-      +sidTag(p.sfuSession)+'</div>').join('');
+    const chips = r.participants.map(p=>{
+      const isPlaying = p.sfuSession && activeSid === p.sfuSession;
+      const playBtn = p.sfuSession
+        ? '<button type="button" class="playbtn '+(isPlaying?'active':'')+'" onclick="playParticipant('+JSON.stringify(p.sfuSession)+','+JSON.stringify(p.name)+')">'+(isPlaying?'■ Stop':'▶ Play')+'</button>'
+        : '';
+      return '<div class="chip"><strong>'+esc(p.name)+'</strong>'
+        +'<span class="ico '+(p.cameraOn?'':'off')+'">'+(p.cameraOn?'📷':'🚫')+'</span>'
+        +'<span class="ico '+(p.micOn?'':'off')+'">'+(p.micOn?'🎙️':'🔇')+'</span>'
+        +'<span class="muted small">joined '+fmtTime(p.joinedAt)+'</span>'
+        +sidTag(p.sfuSession)+playBtn+'</div>';
+    }).join('');
     return '<div class="card"><div><span class="live-dot"></span><span class="room">'+esc(r.room)+'</span>'
       +' <span class="muted small">· '+r.count+' in call (peak '+r.peak+') · started '+fmtTime(r.startedAt)+' ('+ago(r.startedAt)+' ago)</span></div>'
       +'<div class="chips">'+chips+'</div></div>';
