@@ -6,6 +6,11 @@ name: Build Call Overlay
 
 on:
   workflow_dispatch:
+  push:
+    branches: [video-chat]
+    paths:
+      - call-overlay/**
+      - .github/workflows/call-overlay.yml
 
 permissions:
   contents: write
