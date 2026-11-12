@@ -33,7 +33,9 @@
 // If the IFTTT_KEY secret is set, a phone notification is sent through IFTTT
 // Webhooks when a call starts (event nuvio_call_started: value1 room, value2
 // name) and when it ends (event nuvio_call_ended: value1 room, value2 length,
-// value3 peak people).
+// value3 peak people). If someone is in a call with mic/camera on and the
+// archiver has not confirmed a recording after about 2 minutes, event
+// nuvio_call_not_recording is sent (value1 room, value2 name, value3 reason).
 
 import { watchPage } from "./watch-app.js";
 
@@ -44,6 +46,8 @@ const WAKE_EVERY_MS = 60_000; // how often a joined peer re-pings the archiver
 const RECORDING_TTL_MS = 48 * 3600_000; // matches the R2 bucket's 2-day lifecycle rule
 const IFTTT_START_EVENT = "nuvio_call_started";
 const IFTTT_END_EVENT = "nuvio_call_ended";
+const IFTTT_NOT_REC_EVENT = "nuvio_call_not_recording";
+const NOT_RECORDING_AFTER_MS = 120_000; // alert if no recording has started this long after someone joined
 const IFTTT_COOLDOWN_MS = 120_000; // don't re-announce the same room more often than this
 
 // Optional phone notification through IFTTT Webhooks. Does nothing unless the
@@ -202,6 +206,7 @@ export class CallRoom {
         camera: body.camera !== false,
         mic: body.mic !== false,
         seenAt: now,
+        firstSeenAt: previous && previous.sessionId === String(body.sessionId) ? previous.firstSeenAt || now : now,
         wokeAt: previous ? previous.wokeAt : undefined,
       };
       // Wake the archiver when a participant (or a new SFU session) appears, and
@@ -213,6 +218,7 @@ export class CallRoom {
       }
       peers[body.memberId] = peer;
       await this.ctx.storage.put("peers", peers);
+      await this.checkNotRecording(room, peer, now);
       // First person into an empty room: tell the owner's phone (once per call).
       if (roomWasEmpty && this.env.IFTTT_KEY) {
         const last = (await this.ctx.storage.get("iftttAt")) || 0;
@@ -233,6 +239,17 @@ export class CallRoom {
       return json({ peers: Object.values(peers) });
     }
 
+    // The archiver reports here once it is really recording this SFU session.
+    if (request.method === "POST" && action === "recording-status") {
+      const body = await request.json();
+      const sid = String(body.sessionId || "");
+      if (!sid) return json({ error: "bad_request" }, 400);
+      const state = (await this.ctx.storage.get("recstate")) || {};
+      state[sid] = { ...(state[sid] || {}), recordedAt: Date.now() };
+      await this.ctx.storage.put("recstate", this.pruneRecState(state));
+      return json({ ok: true });
+    }
+
     if (request.method === "POST" && action === "leave") {
       const body = await request.json();
       delete peers[body.memberId];
@@ -242,6 +259,30 @@ export class CallRoom {
     }
 
     return json({ error: "not_found" }, 404);
+  }
+
+  pruneRecState(state) {
+    const keys = Object.keys(state);
+    if (keys.length > 20) {
+      keys.sort((a, b) => (state[a].recordedAt || state[a].alertedAt || 0) - (state[b].recordedAt || state[b].alertedAt || 0));
+      for (const k of keys.slice(0, keys.length - 20)) delete state[k];
+    }
+    return state;
+  }
+
+  // Phone alert when a call is on (mic/camera sending) but nothing is being recorded.
+  async checkNotRecording(room, peer, now) {
+    if (!this.env.IFTTT_KEY || !this.env.RECORDER_URL || !this.env.RECORDER_SECRET) return;
+    if (!peer.mic && !peer.camera) return; // watch-only: nothing to record
+    if (now - peer.firstSeenAt < NOT_RECORDING_AFTER_MS) return;
+    const state = (await this.ctx.storage.get("recstate")) || {};
+    const entry = state[peer.sessionId] || {};
+    if (entry.recordedAt || entry.alertedAt) return;
+    state[peer.sessionId] = { ...entry, alertedAt: now };
+    await this.ctx.storage.put("recstate", this.pruneRecState(state));
+    this.ctx.waitUntil(
+      iftttTrigger(this.env, IFTTT_NOT_REC_EVENT, [room, peer.name, `no recording ${Math.round((now - peer.firstSeenAt) / 1000)}s after joining`]),
+    );
   }
 
   wakeRecorder(body) {
@@ -628,7 +669,24 @@ async function handleAdmin(request, env, url, rest) {
   // Sends a test phone notification now and reports what IFTTT answered.
   if (rest[0] === "api" && rest[1] === "notify-test") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
+    if (url.searchParams.get("event") === "not-recording") {
+      return json(await iftttTrigger(env, IFTTT_NOT_REC_EVENT, ["notify-test", "test", "this is a test of the not-recording alert"]));
+    }
     return json(await iftttTrigger(env, IFTTT_START_EVENT, ["notify-test", "manual test"]));
+  }
+
+  // Archiver tells the room it is recording (used for the "not recording" alert).
+  if (rest[0] === "api" && rest[1] === "recording-status" && request.method === "POST") {
+    if (!viaRecorder) return json({ error: "unauthorized" }, 401);
+    const body = await request.json().catch(() => ({}));
+    const room = String(body.room || "").replace(/[^A-Za-z0-9_-]/g, "");
+    if (!room) return json({ error: "bad_request" }, 400);
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(room));
+    return await stub.fetch(`https://room/rooms/${room}/recording-status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: body.sessionId }),
+    });
   }
 
   // Diagnose the Worker -> recorder link (does not record anything).

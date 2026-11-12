@@ -402,6 +402,14 @@ async function runRecording(rec) {
           log(`[${rec.tag}] could not start ffmpeg: ${e.message}`);
           rec.ending = "ffmpeg_failed";
         });
+        if (!rec.ending) {
+          // Tell the Worker a recording really started (it alerts if this never arrives).
+          workerFetch("/admin/api/recording-status", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ room: rec.room, sessionId: rec.sessionId }),
+          }).catch((e) => log(`[${rec.tag}] recording-status failed: ${e.message}`));
+        }
         nextPli = 0;
       }
     }
@@ -467,6 +475,7 @@ function startRecording({ room, sessionId, name }) {
   const startedAt = Date.now();
   const rec = {
     sessionId,
+    room: String(room || ""),
     startedAt,
     tag: `${safe(room, 20)}/${sessionId.slice(0, 8)}`,
     base: `${safe(room, 40)}__${safe(name, 24)}__${sessionId.slice(0, 8)}__${stamp(new Date(startedAt))}`,
