@@ -631,6 +631,26 @@ async function handleAdmin(request, env, url, rest) {
     return json(await iftttTrigger(env, IFTTT_START_EVENT, ["notify-test", "manual test"]));
   }
 
+  // Diagnose the Worker -> recorder link (does not record anything).
+  if (rest[0] === "api" && rest[1] === "recorder-test") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    const { RECORDER_URL, RECORDER_SECRET } = env;
+    if (!RECORDER_URL || !RECORDER_SECRET) {
+      return json({ urlSet: !!RECORDER_URL, secretSet: !!RECORDER_SECRET });
+    }
+    try {
+      const r = await fetch(`${String(RECORDER_URL).replace(/\/+$/, "")}/wake`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-recorder-secret": RECORDER_SECRET },
+        body: JSON.stringify({ room: "recorder-test", sessionId: "recorder-test", name: "test" }),
+        signal: AbortSignal.timeout(25_000),
+      });
+      return json({ urlSet: true, secretSet: true, host: new URL(RECORDER_URL).host, status: r.status, body: (await r.text()).slice(0, 200) });
+    } catch (error) {
+      return json({ urlSet: true, secretSet: true, error: String(error) });
+    }
+  }
+
   // Archived calls: list, upload (archiver) and stream/download (dashboard).
   if (rest[0] === "api" && rest[1] === "recordings") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
