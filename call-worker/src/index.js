@@ -595,14 +595,14 @@ h1{font-size:20px;margin:0}.muted{color:#9a9aa5}.small{font-size:13px}
 .stat{background:#17171d;border:1px solid #23232c;border-radius:14px;padding:12px 16px;min-width:120px}
 .stat .n{font-size:26px;font-weight:700}.stat .l{font-size:12px;color:#9a9aa5;margin-top:2px}
 h2{font-size:15px;color:#c7c7d1;margin:26px 0 10px;text-transform:uppercase;letter-spacing:.04em}
-.card{background:#17171d;border:1px solid #23232c;border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.card{background:#17171d;border:1px solid #23232c;border-radius:14px;padding:14px 16px;margin-bottom:10px;overflow-x:auto}
 .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3dd68c;margin-right:7px;box-shadow:0 0 0 0 rgba(61,214,140,.7);animation:pulse 1.8s infinite}
 @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(61,214,140,0)}100%{box-shadow:0 0 0 0 rgba(61,214,140,0)}}
-.room{font-weight:700;font-size:15px}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-.chip{background:#23232c;border-radius:999px;padding:5px 11px;font-size:13px;display:flex;align-items:center;gap:6px}
+.room{font-weight:700;font-size:15px}.chips{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.chip{background:#23232c;border-radius:10px;padding:8px 12px;font-size:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .ico{font-size:12px;opacity:.65}.ico.off{opacity:1;filter:grayscale(1)}
-.sid{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#8a8a95;cursor:copy}
-.phist{display:flex;flex-direction:column;gap:3px}.phist .nm{color:#e9e9ee}
+.sid{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#c7c7d1;background:#17171d;padding:2px 6px;border-radius:6px;word-break:break-all;user-select:all;cursor:copy}
+.phist{display:flex;flex-direction:column;gap:6px}.phist .nm{color:#e9e9ee}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #23232c;vertical-align:top}
 th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 .note{font-size:12px;color:#7a7a85;margin-top:8px}.topbtn{font-size:13px}</style></head><body><div class="wrap">
@@ -618,8 +618,7 @@ const fmtTime = ts => new Date(ts).toLocaleString();
 const ago = ts => { const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60)return s+'s'; const m=Math.round(s/60); if(m<60)return m+'m'; return Math.round(m/60)+'h'; };
 const dur = s => { if(s<60)return s+'s'; const m=Math.floor(s/60); if(m<60)return m+'m '+(s%60)+'s'; return Math.floor(m/60)+'h '+(m%60)+'m'; };
 const esc = t => { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
-const shortId = s => s ? (s.length>14 ? s.slice(0,12)+'…' : s) : '—';
-const sidTag = s => s ? '<code class="sid" title="'+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.title)">'+esc(shortId(s))+'</code>' : '<span class="sid">—</span>';
+const sidTag = s => s ? '<code class="sid" title="Click to copy: '+esc(s)+'" onclick="navigator.clipboard&&navigator.clipboard.writeText('+JSON.stringify(s)+')">'+esc(s)+'</code>' : '<span class="sid">—</span>';
 function statCard(n,l){ return '<div class="stat"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'; }
 function render(d){
   document.getElementById('stats').innerHTML =
@@ -627,21 +626,22 @@ function render(d){
   const live = document.getElementById('live');
   if(!d.live.length){ live.innerHTML='<div class="empty">No calls right now.</div>'; }
   else { live.innerHTML = d.live.map(r=>{
-    const chips = r.participants.map(p=>'<span class="chip">'+esc(p.name)
+    const chips = r.participants.map(p=>'<div class="chip"><strong>'+esc(p.name)+'</strong>'
       +'<span class="ico '+(p.cameraOn?'':'off')+'">'+(p.cameraOn?'📷':'🚫')+'</span>'
       +'<span class="ico '+(p.micOn?'':'off')+'">'+(p.micOn?'🎙️':'🔇')+'</span>'
-      +sidTag(p.sfuSession)+'</span>').join('');
+      +'<span class="muted small">joined '+fmtTime(p.joinedAt)+'</span>'
+      +sidTag(p.sfuSession)+'</div>').join('');
     return '<div class="card"><div><span class="live-dot"></span><span class="room">'+esc(r.room)+'</span>'
-      +' <span class="muted small">· '+r.count+' in call · started '+ago(r.startedAt)+' ago</span></div>'
+      +' <span class="muted small">· '+r.count+' in call (peak '+r.peak+') · started '+fmtTime(r.startedAt)+' ('+ago(r.startedAt)+' ago)</span></div>'
       +'<div class="chips">'+chips+'</div></div>';
   }).join(''); }
   const h = document.getElementById('history');
   if(!d.history.length){ h.innerHTML='<div class="empty">No past calls yet.</div>'; }
-  else { h.innerHTML = '<table><thead><tr><th>Room</th><th>When</th><th>Length</th><th>People (SFU session id)</th></tr></thead><tbody>'
+  else { h.innerHTML = '<table><thead><tr><th>Room</th><th>Started / Ended</th><th>Length</th><th>Peak</th><th>People (Full SFU session id)</th></tr></thead><tbody>'
     + d.history.map(s=>{
         const ppl = s.participants.map(p=>'<div><span class="nm">'+esc(p.name)+'</span> '+sidTag(p.sfuSession)+'</div>').join('');
-        return '<tr><td>'+esc(s.room)+'</td><td>'+fmtTime(s.startedAt)+'</td><td>'+dur(s.durationSec)
-        +'</td><td><div class="phist">'+ppl+'</div></td></tr>';
+        return '<tr><td>'+esc(s.room)+'</td><td>'+fmtTime(s.startedAt)+'<br><span class="muted small">to '+fmtTime(s.endedAt)+'</span></td><td>'+dur(s.durationSec)
+        +'</td><td>'+s.peak+'</td><td><div class="phist">'+ppl+'</div></td></tr>';
       }).join('') + '</tbody></table>'; }
 }
 async function tick(){
