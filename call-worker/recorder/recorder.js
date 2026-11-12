@@ -257,20 +257,58 @@ async function startFfmpeg(rec) {
   }
 }
 
+// payload type -> codec, read from the SFU's own offer (m-line kind + rtpmap/fmtp).
+export function parseOfferCodecs(sdp) {
+  const table = {};
+  let kind = null;
+  for (const raw of String(sdp).split(/\r?\n/)) {
+    const line = raw.trim();
+    let m = /^m=(audio|video)\s/.exec(line);
+    if (m) {
+      kind = m[1];
+      continue;
+    }
+    if (!kind) continue;
+    m = /^a=rtpmap:(\d+)\s+([^/\s]+)\/(\d+)(?:\/(\d+))?/.exec(line);
+    if (m) {
+      const entry = (table[`${kind}:${m[1]}`] ||= {});
+      entry.encoding = m[2];
+      entry.clockRate = Number(m[3]);
+      if (m[4]) entry.channels = Number(m[4]);
+      continue;
+    }
+    m = /^a=fmtp:(\d+)\s+(.*)$/.exec(line);
+    if (m) (table[`${kind}:${m[1]}`] ||= {}).fmtp = m[2];
+  }
+  return table;
+}
+
+const AUX_CODECS = new Set(["rtx", "red", "ulpfec", "flexfec-03"]);
+
 function onTrack(rec, pc, track) {
   const stream = { kind: track.kind, track, pt: null, buffer: [], packets: 0 };
   rec.streams.set(track, stream);
+  log(`[${rec.tag}] remote ${track.kind} track arrived`);
   track.onReceiveRtp.subscribe((rtp, _ext, info) => {
     if (rec.ending || (info && info.type === "padding")) return;
     if (stream.pt == null) {
-      // The first real packet fixes the payload type and tells us the codec.
-      const codec = track.codec || pc.getTransceivers().find((t) => t.receiver && t.receiver.track === track)?.codecs?.[0];
-      if (!codec) return;
-      stream.pt = rtp.header.payloadType;
-      stream.encoding = String(codec.mimeType).split("/")[1] || (track.kind === "audio" ? "opus" : "VP8");
-      stream.clockRate = codec.clockRate || (track.kind === "audio" ? 48000 : 90000);
-      stream.channels = track.kind === "audio" ? codec.channels || 2 : undefined;
-      stream.fmtp = codec.parameters || (/^h264$/i.test(stream.encoding) ? "packetization-mode=1" : undefined);
+      // The first real packet fixes the payload type; its codec comes from the SFU's offer.
+      const pt = rtp.header.payloadType;
+      const fromOffer = rec.offerCodecs?.[`${track.kind}:${pt}`];
+      const werift = track.codec;
+      const encoding = fromOffer?.encoding || String(werift?.mimeType || "").split("/")[1];
+      if (!encoding) {
+        if (!stream.warned) log(`[${rec.tag}] ${track.kind} packet with unknown payload type ${pt}; skipping`);
+        stream.warned = true;
+        return;
+      }
+      if (AUX_CODECS.has(encoding.toLowerCase())) return; // wait for a primary-codec packet
+      stream.pt = pt;
+      stream.encoding = encoding;
+      stream.clockRate = fromOffer?.clockRate || werift?.clockRate || (track.kind === "audio" ? 48000 : 90000);
+      stream.channels = track.kind === "audio" ? fromOffer?.channels || werift?.channels || 2 : undefined;
+      stream.fmtp = fromOffer?.fmtp || (/^h264$/i.test(encoding) ? "packetization-mode=1" : undefined);
+      log(`[${rec.tag}] first ${track.kind} RTP: payload ${pt} ${encoding}/${stream.clockRate}`);
       rec.firstRtpAt ??= Date.now();
     }
     if (rtp.header.payloadType !== stream.pt) return; // RED/FEC/other payloads
@@ -295,6 +333,9 @@ async function pullTracks(rec, trackNames) {
 
   const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] });
   rec.pc = pc;
+  rec.offerCodecs = parseOfferCodecs(pull.sessionDescription.sdp);
+  pc.connectionStateChange.subscribe((s) => log(`[${rec.tag}] connection ${s}`));
+  pc.iceConnectionStateChange.subscribe((s) => log(`[${rec.tag}] ice ${s}`));
   pc.onTrack.subscribe((track) => onTrack(rec, pc, track));
   await pc.setRemoteDescription({ type: pull.sessionDescription.type, sdp: pull.sessionDescription.sdp });
   const answer = await pc.createAnswer();
@@ -375,6 +416,10 @@ async function runRecording(rec) {
 
     if (now >= nextPoll) {
       nextPoll = now + POLL_MS;
+      if (!rec.started || ++rec.pollCount % 5 === 0) {
+        const counts = [...rec.streams.values()].map((s) => `${s.kind}=${s.packets}`).join(" ") || "no tracks yet";
+        log(`[${rec.tag}] status: connection=${rec.pc.connectionState} ice=${rec.pc.iceConnectionState} rtp packets: ${counts}`);
+      }
       try {
         const alive = activeLocalTracks(await sfu("GET", `/${encodeURIComponent(rec.sessionId)}`)).length > 0;
         misses = alive ? 0 : misses + 1;
@@ -427,6 +472,7 @@ function startRecording({ room, sessionId, name }) {
     base: `${safe(room, 40)}__${safe(name, 24)}__${sessionId.slice(0, 8)}__${stamp(new Date(startedAt))}`,
     streams: new Map(),
     uploaded: 0,
+    pollCount: 0,
     ending: null,
     started: false,
   };
