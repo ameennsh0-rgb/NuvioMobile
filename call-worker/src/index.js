@@ -56,8 +56,8 @@ const IFTTT_COOLDOWN_MS = 120_000; // don't re-announce the same room more often
 // If NTFY_TOPIC is set, alerts go to the free ntfy phone app instead (no monthly cap).
 async function ntfyTrigger(env, event, values) {
   const kinds = {
-    [IFTTT_START_EVENT]: { title: "Call started", tags: ["phone"], priority: 3, text: [values[0], values[1]] },
-    [IFTTT_END_EVENT]: { title: "Call ended", tags: ["checkered_flag"], priority: 2, text: [values[0], values[1], values[2]] },
+    [IFTTT_START_EVENT]: { title: "Call started", tags: ["phone"], priority: 3, text: [values[0], values[1], values[2]] },
+    [IFTTT_END_EVENT]: { title: "Call ended", tags: ["checkered_flag"], priority: 2, text: [values[0], values[1], values[2], values[3]] },
     [IFTTT_NOT_REC_EVENT]: { title: "Call NOT being recorded", tags: ["warning"], priority: 5, text: [values[0], values[1], values[2]] },
   };
   const kind = kinds[event] || { title: "Nuvio call", tags: [], priority: 3, text: values };
@@ -284,6 +284,7 @@ export class CallRoom {
       const peer = {
         memberId: String(body.memberId),
         name: String(body.name || "Guest").slice(0, 60),
+        movie: body.movie ? String(body.movie).slice(0, 120) : undefined,
         sessionId: String(body.sessionId),
         tracks: Array.isArray(body.tracks) ? body.tracks.map(String).slice(0, 4) : [],
         camera: body.camera !== false,
@@ -312,7 +313,7 @@ export class CallRoom {
         const last = (await this.ctx.storage.get("iftttAt")) || 0;
         if (now - last > IFTTT_COOLDOWN_MS) {
           await this.ctx.storage.put("iftttAt", now);
-          this.ctx.waitUntil(iftttTrigger(this.env, IFTTT_START_EVENT, [room, peer.name]));
+          this.ctx.waitUntil(iftttTrigger(this.env, IFTTT_START_EVENT, [room, peer.name, peer.movie || ""]));
         }
       }
       // Record metadata for the dashboard (never any media).
@@ -323,6 +324,7 @@ export class CallRoom {
         camera: peer.camera,
         mic: peer.mic,
         sfuSession: peer.sessionId,
+        movie: peer.movie || null,
       });
       return json({ peers: Object.values(peers) });
     }
@@ -476,6 +478,11 @@ export class CallDirectory {
       } catch (_) {
         // Already present.
       }
+      try {
+        this.sql.exec(`ALTER TABLE sessions ADD COLUMN movie TEXT`);
+      } catch (_) {
+        // Already present.
+      }
     });
   }
 
@@ -522,6 +529,8 @@ export class CallDirectory {
     const camera = body.camera ? 1 : 0;
     const mic = body.mic ? 1 : 0;
     const sfuSession = body.sfuSession ? String(body.sfuSession).slice(0, 120) : null;
+    const movie = body.movie ? String(body.movie).slice(0, 120) : null;
+    if (movie) this.sql.exec(`UPDATE sessions SET movie = ? WHERE id = ?`, movie, sessionId);
     const exists = this.sql
       .exec(`SELECT member_id FROM participants WHERE session_id = ? AND member_id = ?`, sessionId, memberId)
       .toArray()[0];
@@ -569,7 +578,7 @@ export class CallDirectory {
   closeIfEmpty(sessionId, now) {
     if (this.activeCount(sessionId) === 0) {
       const open = this.sql
-        .exec(`SELECT room, started_at, peak FROM sessions WHERE id = ? AND ended_at IS NULL`, sessionId)
+        .exec(`SELECT room, started_at, peak, movie FROM sessions WHERE id = ? AND ended_at IS NULL`, sessionId)
         .toArray()[0];
       if (!open) return;
       this.sql.exec(`UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL`, now, sessionId);
@@ -577,6 +586,7 @@ export class CallDirectory {
         open.room,
         formatDuration(now - open.started_at),
         `${open.peak} ${open.peak === 1 ? "person" : "people"}`,
+        open.movie || "",
       ]);
       this.pending.push(sent);
       this.ctx.waitUntil(sent);
@@ -605,7 +615,7 @@ export class CallDirectory {
 
   state() {
     const liveRows = this.sql
-      .exec(`SELECT id, room, started_at, peak FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC`)
+      .exec(`SELECT id, room, started_at, peak, movie FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC`)
       .toArray();
     const live = liveRows.map((s) => {
       const people = this.sql
@@ -617,6 +627,7 @@ export class CallDirectory {
         .toArray();
       return {
         room: s.room,
+        movie: s.movie || null,
         startedAt: s.started_at,
         peak: s.peak,
         count: people.length,
@@ -631,7 +642,7 @@ export class CallDirectory {
     });
     const history = this.sql
       .exec(
-        `SELECT id, room, started_at, ended_at, peak FROM sessions
+        `SELECT id, room, started_at, ended_at, peak, movie FROM sessions
          WHERE ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 100`,
       )
       .toArray()
@@ -642,6 +653,7 @@ export class CallDirectory {
           .map((r) => ({ name: r.name, sfuSession: r.sfu_session || null }));
         return {
           room: s.room,
+          movie: s.movie || null,
           startedAt: s.started_at,
           endedAt: s.ended_at,
           durationSec: Math.max(0, Math.round((s.ended_at - s.started_at) / 1000)),
@@ -1243,6 +1255,7 @@ function render(d){
         +sidTag(p.sfuSession)+playBtn+'</div>';
     }).join('');
     return '<div class="card"><div><span class="live-dot"></span><span class="room">'+esc(r.room)+'</span>'
+      +(r.movie?' <strong>🎬 '+esc(r.movie)+'</strong>':'')
       +' <span class="muted small">· '+r.count+' in call (peak '+r.peak+') · started '+fmtTime(r.startedAt)+' ('+ago(r.startedAt)+' ago)</span></div>'
       +'<div class="chips">'+chips+'</div></div>';
   }).join(''); }
@@ -1251,7 +1264,7 @@ function render(d){
   else { h.innerHTML = '<table><thead><tr><th>Room</th><th>Started / Ended</th><th>Length</th><th>Peak</th><th>People (Full SFU session id)</th></tr></thead><tbody>'
     + d.history.map(s=>{
         const ppl = s.participants.map(p=>'<div><span class="nm">'+esc(p.name)+'</span> '+sidTag(p.sfuSession)+'</div>').join('');
-        return '<tr><td>'+esc(s.room)+'</td><td>'+fmtTime(s.startedAt)+'<br><span class="muted small">to '+fmtTime(s.endedAt)+'</span></td><td>'+dur(s.durationSec)
+        return '<tr><td>'+esc(s.room)+(s.movie?'<br><span class="muted small">🎬 '+esc(s.movie)+'</span>':'')+'</td><td>'+fmtTime(s.startedAt)+'<br><span class="muted small">to '+fmtTime(s.endedAt)+'</span></td><td>'+dur(s.durationSec)
         +'</td><td>'+s.peak+'</td><td><div class="phist">'+ppl+'</div></td></tr>';
       }).join('') + '</tbody></table>'; }
 }
