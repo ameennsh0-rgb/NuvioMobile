@@ -66,7 +66,7 @@ async function ntfyTrigger(env, event, values) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        topic: env.NTFY_TOPIC,
+        topic: String(env.NTFY_TOPIC).trim(),
         title: kind.title,
         message: kind.text.filter(Boolean).join(" · ") || "-",
         priority: kind.priority,
@@ -74,7 +74,7 @@ async function ntfyTrigger(env, event, values) {
       }),
       signal: AbortSignal.timeout(10_000),
     });
-    return { configured: true, via: "ntfy", status: res.status };
+    return { configured: true, via: "ntfy", status: res.status, reply: res.ok ? undefined : (await res.text()).slice(0, 160) };
   } catch (error) {
     return { configured: true, via: "ntfy", error: String(error) };
   }
