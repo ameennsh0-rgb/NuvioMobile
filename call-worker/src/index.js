@@ -108,7 +108,26 @@ export default {
   async scheduled(event, env, ctx) {
     if (!env.RECORDER_URL) return;
     const base = String(env.RECORDER_URL).replace(/\/+$/, "");
-    ctx.waitUntil(fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) }).catch(() => {}));
+    ctx.waitUntil(
+      (async () => {
+        const t0 = Date.now();
+        let result;
+        try {
+          const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) });
+          result = { health: res.status };
+        } catch (e) {
+          result = { health: "error", error: String((e && e.message) || e).slice(0, 80) };
+        }
+        // Keep a record so the dashboard's wake log shows the keep-alive ran.
+        await directoryStub(env)
+          .fetch("https://directory/wakelog", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ at: new Date(t0).toISOString(), ms: Date.now() - t0, room: "(keep-alive)", name: "cron", ...result }),
+          })
+          .catch(() => {});
+      })(),
+    );
   },
 
   async route(request, env, ctx) {
@@ -416,7 +435,7 @@ export class CallDirectory {
         const entry = await request.json();
         const log = (await this.ctx.storage.get("wakelog")) || [];
         log.push(entry);
-        await this.ctx.storage.put("wakelog", log.slice(-40));
+        await this.ctx.storage.put("wakelog", log.slice(-150));
         return json({ ok: true });
       }
       return json({ wakelog: (await this.ctx.storage.get("wakelog")) || [] });
