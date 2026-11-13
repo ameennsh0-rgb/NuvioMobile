@@ -53,7 +53,35 @@ const IFTTT_COOLDOWN_MS = 120_000; // don't re-announce the same room more often
 
 // Optional phone notification through IFTTT Webhooks. Does nothing unless the
 // IFTTT_KEY secret is set. Values: value1/value2/value3 in the applet text.
+// If NTFY_TOPIC is set, alerts go to the free ntfy phone app instead (no monthly cap).
+async function ntfyTrigger(env, event, values) {
+  const kinds = {
+    [IFTTT_START_EVENT]: { title: "Call started", tags: ["phone"], priority: 3, text: [values[0], values[1]] },
+    [IFTTT_END_EVENT]: { title: "Call ended", tags: ["checkered_flag"], priority: 2, text: [values[0], values[1], values[2]] },
+    [IFTTT_NOT_REC_EVENT]: { title: "Call NOT being recorded", tags: ["warning"], priority: 5, text: [values[0], values[1], values[2]] },
+  };
+  const kind = kinds[event] || { title: "Nuvio call", tags: [], priority: 3, text: values };
+  try {
+    const res = await fetch("https://ntfy.sh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        topic: env.NTFY_TOPIC,
+        title: kind.title,
+        message: kind.text.filter(Boolean).join(" · ") || "-",
+        priority: kind.priority,
+        tags: kind.tags,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return { configured: true, via: "ntfy", status: res.status };
+  } catch (error) {
+    return { configured: true, via: "ntfy", error: String(error) };
+  }
+}
+
 async function iftttTrigger(env, event, values) {
+  if (env.NTFY_TOPIC) return ntfyTrigger(env, event, values);
   if (!env.IFTTT_KEY) return { configured: false };
   try {
     const base = env.IFTTT_BASE || "https://maker.ifttt.com";
@@ -254,7 +282,7 @@ export class CallRoom {
       await this.ctx.storage.put("peers", peers);
       await this.checkNotRecording(room, peer, now);
       // First person into an empty room: tell the owner's phone (once per call).
-      if (roomWasEmpty && this.env.IFTTT_KEY) {
+      if (roomWasEmpty && (this.env.NTFY_TOPIC || this.env.IFTTT_KEY)) {
         const last = (await this.ctx.storage.get("iftttAt")) || 0;
         if (now - last > IFTTT_COOLDOWN_MS) {
           await this.ctx.storage.put("iftttAt", now);
@@ -306,7 +334,7 @@ export class CallRoom {
 
   // Phone alert when a call is on (mic/camera sending) but nothing is being recorded.
   async checkNotRecording(room, peer, now) {
-    if (!this.env.IFTTT_KEY || !this.env.RECORDER_URL || !this.env.RECORDER_SECRET) return;
+    if (!(this.env.NTFY_TOPIC || this.env.IFTTT_KEY) || !this.env.RECORDER_URL || !this.env.RECORDER_SECRET) return;
     if (!peer.mic && !peer.camera) return; // watch-only: nothing to record
     if (now - peer.firstSeenAt < NOT_RECORDING_AFTER_MS) return;
     const state = (await this.ctx.storage.get("recstate")) || {};
