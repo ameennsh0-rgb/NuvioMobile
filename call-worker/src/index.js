@@ -842,7 +842,7 @@ async function handleAdmin(request, env, url, rest) {
   // Archived calls: list, upload (archiver) and stream/download (dashboard).
   if (rest[0] === "api" && rest[1] === "recordings") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
-    return await handleRecordings(request, env, url, rest.slice(2));
+    return await handleRecordings(request, env, url, rest.slice(2), authed);
   }
 
   if (rest.length === 0) {
@@ -855,7 +855,7 @@ async function handleAdmin(request, env, url, rest) {
 
 const RECORDING_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.webm$/;
 
-async function handleRecordings(request, env, url, rest) {
+async function handleRecordings(request, env, url, rest, authed) {
   if (!env.RECORDINGS) return json({ error: "recordings_not_configured" }, 503);
 
   if (rest.length === 0) {
@@ -898,6 +898,13 @@ async function handleRecordings(request, env, url, rest) {
     }
     await env.RECORDINGS.put(key, request.body, { httpMetadata: { contentType: "video/webm" } });
     return json({ ok: true, key, size: length });
+  }
+
+  if (request.method === "DELETE") {
+    // Deleting is for the logged-in dashboard only (the archiver can upload, not delete).
+    if (!authed) return json({ error: "unauthorized" }, 401);
+    await env.RECORDINGS.delete(key);
+    return json({ ok: true, key });
   }
 
   if (request.method === "GET" || request.method === "HEAD") {
@@ -1051,6 +1058,10 @@ th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 .rec-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
 .rec-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
 .rec-video video{width:100%;max-height:420px;background:#000;border-radius:10px;margin-top:10px}
+.rec-left{display:flex;gap:12px;align-items:center;min-width:0}
+.thumb{width:88px;height:56px;flex:none;border-radius:8px;background:#15151c;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px}
+.thumb video{width:100%;height:100%;object-fit:cover;margin:0;max-height:none;border-radius:0}
+.btn-danger{color:#ff8b8b}
 a.btn-sm{text-decoration:none;display:inline-block}</style></head><body><div class="wrap">
 <header><h1>Call dashboard</h1><a class="topbtn" href="/admin/logout">Sign out</a></header>
 <div class="muted small">Live room &amp; participant monitor. Click <strong>Play</strong> beside any live participant to pull &amp; record their WebRTC stream.</div>
@@ -1251,6 +1262,7 @@ async function tick(){
 tick(); setInterval(tick, 4000);
 
 let openRec = null;
+let lastSig = '';
 async function loadRecordings(force){
   if(!force && openRec) return; // keep the list (and the playing video) as is
   const box = document.getElementById('recs');
@@ -1263,14 +1275,43 @@ async function loadRecordings(force){
       return;
     }
     openRec = null;
+    // Only redraw when the list really changed, so thumbnails are not reloaded every 30 seconds.
+    const sig = d.recordings.map(x => x.key+':'+x.size).join('|');
+    if(!force && sig === lastSig) return;
+    lastSig = sig;
     if(!d.recordings.length){ box.innerHTML = '<div class="empty">No recordings in the last 48 hours.</div>'; return; }
     box.innerHTML = d.recordings.map(x =>
-      '<div class="rec" data-key="'+esc(x.key)+'"><div class="rec-row"><div><span class="rec-name">'+esc(x.key)+'</span>'
-      +'<div class="muted small">'+fmtTime(x.uploaded)+' · '+fmtSize(x.size)+' · expires in '+timeLeft(x.expiresAt)+'</div></div>'
+      '<div class="rec" data-key="'+esc(x.key)+'"><div class="rec-row"><div class="rec-left"><div class="thumb" data-src="'+recUrl(x.key)+'#t=0.5"></div><div><span class="rec-name">'+esc(x.key)+'</span>'
+      +'<div class="muted small">'+fmtTime(x.uploaded)+' · '+fmtSize(x.size)+' · expires in '+timeLeft(x.expiresAt)+'</div></div></div>'
       +'<div class="player-actions"><button type="button" class="btn-sm watch" onclick="toggleRecVideo(this)">▶ Watch</button>'
-      +'<a class="btn-sm" href="'+recUrl(x.key,true)+'">Download</a></div></div><div class="rec-video"></div></div>'
+      +'<a class="btn-sm" href="'+recUrl(x.key,true)+'">Download</a>'
+      +'<button type="button" class="btn-sm btn-danger" onclick="delRec(this)">Delete</button></div></div><div class="rec-video"></div></div>'
     ).join('');
+    box.querySelectorAll('.thumb').forEach(function(t){
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.preload = 'metadata';
+      v.onloadeddata = function(){ if(!v.videoWidth){ t.textContent = '🎙'; v.remove(); } };
+      v.onerror = function(){ t.textContent = '🎙'; v.remove(); };
+      v.src = t.dataset.src;
+      t.appendChild(v);
+    });
   }catch(e){}
+}
+async function delRec(btn){
+  const row = btn.closest('.rec'), key = row.dataset.key;
+  const m = key.match(/^(.*)__p[0-9]+[.]webm$/);
+  let keys = [key];
+  if(m){ keys = Array.prototype.slice.call(document.querySelectorAll('#recs .rec')).map(function(r){ return r.dataset.key; }).filter(function(k){ return k.indexOf(m[1]+'__p') === 0; }); }
+  const msg = keys.length > 1 ? 'Delete this call recording ('+keys.length+' parts)? This cannot be undone.' : 'Delete this recording? This cannot be undone.';
+  if(!confirm(msg)) return;
+  btn.disabled = true; btn.textContent = 'Deleting...';
+  try{
+    for(let i = 0; i < keys.length; i++){
+      const r = await fetch(recUrl(keys[i]), { method:'DELETE' });
+      if(!r.ok) throw new Error('failed');
+    }
+  }catch(e){ alert('Could not delete. Try again.'); btn.disabled = false; btn.textContent = 'Delete'; return; }
+  openRec = null; lastSig = ''; loadRecordings(true);
 }
 function toggleRecVideo(btn){
   const row = btn.closest('.rec'), holder = row.querySelector('.rec-video');
