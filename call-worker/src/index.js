@@ -64,7 +64,11 @@ async function ntfyTrigger(env, event, values) {
   try {
     const res = await fetch("https://ntfy.sh", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        // A logged-in ntfy account has its own quota; the shared Cloudflare address does not.
+        ...(env.NTFY_TOKEN ? { authorization: `Bearer ${String(env.NTFY_TOKEN).trim()}` } : {}),
+      },
       body: JSON.stringify({
         topic: String(env.NTFY_TOPIC).trim(),
         title: kind.title,
