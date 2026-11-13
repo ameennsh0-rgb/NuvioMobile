@@ -84,7 +84,29 @@ async function ntfyTrigger(env, event, values) {
   }
 }
 
+// Telegram bot alerts (no shared-address quota, unlike ntfy.sh): set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
+async function telegramTrigger(env, event, values) {
+  const titles = {
+    [IFTTT_START_EVENT]: "\uD83D\uDCDE Call started",
+    [IFTTT_END_EVENT]: "\uD83C\uDFC1 Call ended",
+    [IFTTT_NOT_REC_EVENT]: "\u26A0\uFE0F Call NOT being recorded",
+  };
+  const text = `${titles[event] || "Nuvio call"}\n${values.filter(Boolean).join(" \u00B7 ")}`;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${String(env.TELEGRAM_BOT_TOKEN).trim()}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: String(env.TELEGRAM_CHAT_ID).trim(), text, disable_notification: event === IFTTT_END_EVENT }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return { configured: true, via: "telegram", status: res.status, reply: res.ok ? undefined : (await res.text()).slice(0, 160) };
+  } catch (error) {
+    return { configured: true, via: "telegram", error: String(error) };
+  }
+}
+
 async function iftttTrigger(env, event, values) {
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) return telegramTrigger(env, event, values);
   if (env.NTFY_TOPIC) return ntfyTrigger(env, event, values);
   if (!env.IFTTT_KEY) return { configured: false };
   try {
@@ -286,7 +308,7 @@ export class CallRoom {
       await this.ctx.storage.put("peers", peers);
       await this.checkNotRecording(room, peer, now);
       // First person into an empty room: tell the owner's phone (once per call).
-      if (roomWasEmpty && (this.env.NTFY_TOPIC || this.env.IFTTT_KEY)) {
+      if (roomWasEmpty && (this.env.TELEGRAM_BOT_TOKEN || this.env.NTFY_TOPIC || this.env.IFTTT_KEY)) {
         const last = (await this.ctx.storage.get("iftttAt")) || 0;
         if (now - last > IFTTT_COOLDOWN_MS) {
           await this.ctx.storage.put("iftttAt", now);
@@ -338,7 +360,7 @@ export class CallRoom {
 
   // Phone alert when a call is on (mic/camera sending) but nothing is being recorded.
   async checkNotRecording(room, peer, now) {
-    if (!(this.env.NTFY_TOPIC || this.env.IFTTT_KEY) || !this.env.RECORDER_URL || !this.env.RECORDER_SECRET) return;
+    if (!(this.env.TELEGRAM_BOT_TOKEN || this.env.NTFY_TOPIC || this.env.IFTTT_KEY) || !this.env.RECORDER_URL || !this.env.RECORDER_SECRET) return;
     if (!peer.mic && !peer.camera) return; // watch-only: nothing to record
     if (now - peer.firstSeenAt < NOT_RECORDING_AFTER_MS) return;
     const state = (await this.ctx.storage.get("recstate")) || {};
