@@ -322,13 +322,24 @@ function onTrack(rec, pc, track) {
 }
 
 async function pullTracks(rec, trackNames) {
+  // A retry starts clean: drop the previous attempt's connection and streams.
+  try {
+    await rec.pc?.close();
+  } catch (_) {}
+  rec.pc = null;
+  rec.streams.clear();
+  rec.firstRtpAt = null;
+  rec.pullFailed = [];
   const { sessionId: subId } = await sfu("POST", "/new");
   rec.subId = subId;
   const pull = await sfu("POST", `/${encodeURIComponent(subId)}/tracks/new`, {
     tracks: trackNames.map((trackName) => ({ location: "remote", sessionId: rec.sessionId, trackName })),
   });
   for (const t of pull.tracks || []) {
-    if (t.errorCode) log(`[${rec.tag}] SFU could not pull ${t.trackName}: ${t.errorDescription || t.errorCode}`);
+    if (t.errorCode) {
+      rec.pullFailed.push(t.trackName);
+      log(`[${rec.tag}] SFU could not pull ${t.trackName}: ${t.errorDescription || t.errorCode}`);
+    }
   }
   if (!pull.sessionDescription) throw new Error("SFU returned no offer");
 
@@ -386,6 +397,22 @@ async function runRecording(rec) {
 
   // 2. Subscribe.
   await pullTracks(rec, names);
+  // The publisher's media often is not flowing yet when its tracks first show as
+  // active ("No track data from remote peer"). Pull again a few seconds later,
+  // otherwise that person is recorded without video, or not at all.
+  for (let attempt = 1; attempt <= 5 && rec.pullFailed.length && !rec.ending; attempt++) {
+    log(`[${rec.tag}] retry ${attempt}/5 in 4s for: ${rec.pullFailed.join(", ")}`);
+    await sleep(4000);
+    try {
+      const info = await sfu("GET", `/${encodeURIComponent(rec.sessionId)}`);
+      const still = activeLocalTracks(info).map((t) => t.trackName);
+      if (!still.length) break;
+      names = still;
+    } catch (_) {}
+    await pullTracks(rec, names).catch((e) => log(`[${rec.tag}] retry pull failed: ${e.message}`));
+  }
+  if (!rec.pc) throw new Error("could not subscribe to the participant's tracks");
+  if (rec.pullFailed.length) log(`[${rec.tag}] still could not pull: ${rec.pullFailed.join(", ")} (recording what is available)`);
   log(`[${rec.tag}] subscribed to ${names.join(", ")}`);
 
   // 3. Poll until the session ends; start ffmpeg once RTP is flowing; upload as we go.
