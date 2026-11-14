@@ -830,7 +830,7 @@ async function handleAdmin(request, env, url, rest) {
     return json(data, res.status);
   }
 
-  // Recorder's own recent log lines (so you do not need the Render dashboard).
+  // Recorder's own recent log lines (so you do not need the host's dashboard).
   if (rest[0] === "api" && rest[1] === "recorder-logs") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
     if (!env.RECORDER_URL || !env.RECORDER_SECRET) return json({ error: "recorder not configured" }, 500);
@@ -1466,7 +1466,7 @@ async function loadPings(){
     const sig = head + rows + rcUrl;
     if(sig === rcLive) return;
     rcLive = sig;
-    document.getElementById('rc').innerHTML = '<div id="rc-head" style="margin-bottom:8px">'+head+'</div>'+(rcUrl ? '<div style="margin-bottom:8px"><a class="btn-sm" style="display:inline-block;text-decoration:none" href="'+esc(rcUrl)+'" target="_blank" rel="noopener">Open Render health (wakes it) &#8599;</a></div>' : '')+'<div id="rc-live" class="small muted"></div>' + (table ? '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Ping history (last '+Math.min(25,log.length)+')</summary>'+table+'</details>' : '');
+    document.getElementById('rc').innerHTML = '<div id="rc-head" style="margin-bottom:8px">'+head+'</div>'+(rcUrl ? '<div style="margin-bottom:8px"><a class="btn-sm" style="display:inline-block;text-decoration:none" href="'+esc(rcUrl)+'" target="_blank" rel="noopener">Open recorder health &#8599;</a></div>' : '')+'<div id="rc-live" class="small muted"></div>' + (table ? '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Ping history (last '+Math.min(25,log.length)+')</summary>'+table+'</details>' : '');
   }catch(e){}
 }
 async function checkRecorder(){
