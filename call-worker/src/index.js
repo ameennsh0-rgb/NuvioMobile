@@ -830,6 +830,21 @@ async function handleAdmin(request, env, url, rest) {
     return json(data, res.status);
   }
 
+  // Recorder's own recent log lines (so you do not need the Render dashboard).
+  if (rest[0] === "api" && rest[1] === "recorder-logs") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    if (!env.RECORDER_URL || !env.RECORDER_SECRET) return json({ error: "recorder not configured" }, 500);
+    try {
+      const r = await fetch(String(env.RECORDER_URL).replace(/\/+$/, "") + "/logs", {
+        headers: { "x-recorder-secret": env.RECORDER_SECRET },
+        signal: AbortSignal.timeout(8_000),
+      });
+      return new Response(r.ok ? await r.text() : "recorder answered HTTP " + r.status, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    } catch (e) {
+      return new Response("No answer in 8s (recorder asleep, or it restarted so its log is empty).", { headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
+  }
+
   // Live check of the recorder's /health. Note: this wakes a sleeping host, so
   // the dashboard only calls it when you press "Check now".
   if (rest[0] === "api" && rest[1] === "recorder-status") {
@@ -1150,8 +1165,9 @@ a.btn-sm{text-decoration:none;display:inline-block}
   <video id="dash-video" autoplay playsinline controls></video>
 </div>
 
-<h2>Recorder <button type="button" class="btn-sm" id="rc-btn" onclick="checkRecorder()" style="text-transform:none;letter-spacing:0">Check now</button></h2>
+<h2>Recorder <button type="button" class="btn-sm" id="rc-btn" onclick="checkRecorder()" style="text-transform:none;letter-spacing:0">Check now</button> <button type="button" class="btn-sm" onclick="showRecLogs()" style="text-transform:none;letter-spacing:0">Recorder log</button></h2>
 <div class="card" id="rc"><div class="empty">Loading…</div></div>
+<pre id="rc-log" style="display:none;background:#0d0d12;border:1px solid #2a2a33;border-radius:10px;padding:10px;font-size:11px;line-height:1.4;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:8px"></pre>
 <div class="note">Pings come from the Worker's keep-alive (every 7 min, 08:00-23:00 Dubai) and from calls waking the recorder. "Check now" asks the recorder directly and can wake it.</div>
 
 <h2>Live now</h2><div id="live"><div class="empty">Loading…</div></div>
@@ -1438,6 +1454,13 @@ async function checkRecorder(){
   }catch(e){ msg = '<span style="color:#f87171">Live check failed</span>'; }
   const el = document.getElementById('rc-live'); if(el) el.innerHTML = msg;
   b.disabled = false; b.textContent = 'Check now';
+}
+async function showRecLogs(){
+  const el = document.getElementById('rc-log');
+  if(el.style.display === 'block'){ el.style.display = 'none'; return; }
+  el.style.display = 'block'; el.textContent = 'Loading (this can wake the recorder)...';
+  try{ const t = await (await fetch('/admin/api/recorder-logs',{cache:'no-store'})).text(); el.textContent = t.trim().split(String.fromCharCode(10)).slice(-80).join(String.fromCharCode(10)) || '(empty)'; el.scrollTop = el.scrollHeight; }
+  catch(e){ el.textContent = 'Could not load the log.'; }
 }
 loadPings(); setInterval(loadPings, 30000);
 </script></body></html>`;
