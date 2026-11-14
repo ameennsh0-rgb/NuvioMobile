@@ -27,7 +27,7 @@
 //   RECORDER_SECRET   same value as the Worker's RECORDER_SECRET   (required)
 //   PORT              default 10000
 //   SEGMENT_SECONDS   default 240 (length of each uploaded .webm part)
-//   MAX_CONCURRENT    default 4 (simultaneous recordings)
+//   MAX_CONCURRENT    default 6 (simultaneous recordings)
 //   MAX_SESSION_HOURS default 6
 
 import http from "node:http";
@@ -46,7 +46,7 @@ const WORKER_URL = (process.env.WORKER_URL || "").replace(/\/+$/, "");
 const SECRET = process.env.RECORDER_SECRET || "";
 const PORT = Number(process.env.PORT || 10000);
 const SEGMENT_SECONDS = Math.max(30, Number(process.env.SEGMENT_SECONDS || 240));
-const MAX_CONCURRENT = Math.max(1, Number(process.env.MAX_CONCURRENT || 4));
+const MAX_CONCURRENT = Math.max(1, Number(process.env.MAX_CONCURRENT || 6));
 const MAX_SESSION_MS = Math.max(0.1, Number(process.env.MAX_SESSION_HOURS || 6)) * 3600_000;
 
 const POLL_MS = 4000;
@@ -55,6 +55,7 @@ const MAX_UPLOAD_BYTES = 99 * 1024 * 1024; // Workers request-body cap is 100 MB
 const SESSION_ID_RE = /^[A-Za-z0-9_.-]{6,128}$/;
 
 const active = new Map(); // sfu sessionId -> recording state
+let rejected = 0; // /wake calls turned away because every slot was busy
 
 // Recent log lines are also kept in memory so they can be read from GET /logs.
 const recentLogs = [];
@@ -530,7 +531,7 @@ function readJson(req, limit = 16 * 1024) {
 async function handle(req, res) {
   const url = new URL(req.url, "http://localhost");
   if (req.method === "GET" && url.pathname === "/health") {
-    return send(res, 200, { ok: true, active: active.size, uptimeSec: Math.round(process.uptime()) });
+    return send(res, 200, { ok: true, active: active.size, max: MAX_CONCURRENT, rejected, uptimeSec: Math.round(process.uptime()) });
   }
   if (req.method === "GET" && url.pathname === "/logs") {
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
@@ -548,7 +549,11 @@ async function handle(req, res) {
     const sessionId = String(body.sessionId || "");
     if (!SESSION_ID_RE.test(sessionId)) return send(res, 400, { error: "bad_session_id" });
     if (active.has(sessionId)) return send(res, 200, { status: "already_recording" });
-    if (active.size >= MAX_CONCURRENT) return send(res, 429, { error: "too_many_recordings" });
+    if (active.size >= MAX_CONCURRENT) {
+      rejected++;
+      log(`too_many_recordings: ${active.size}/${MAX_CONCURRENT} busy [${[...active.values()].map((r) => r.tag).join(", ")}]; turned away ${body.name || ""} ${sessionId.slice(0, 8)}`);
+      return send(res, 429, { error: "too_many_recordings", active: active.size, max: MAX_CONCURRENT });
+    }
     startRecording({ room: body.room, sessionId, name: body.name });
     return send(res, 202, { status: "started" });
   }

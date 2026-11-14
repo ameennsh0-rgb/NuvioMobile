@@ -371,7 +371,7 @@ export class CallRoom {
     state[peer.sessionId] = { ...entry, alertedAt: now };
     await this.ctx.storage.put("recstate", this.pruneRecState(state));
     this.ctx.waitUntil(
-      iftttTrigger(this.env, IFTTT_NOT_REC_EVENT, [room, peer.name, `no recording ${Math.round((now - peer.firstSeenAt) / 1000)}s after joining`]),
+      iftttTrigger(this.env, IFTTT_NOT_REC_EVENT, [room, peer.name, `no recording ${Math.round((now - peer.firstSeenAt) / 1000)}s after joining` + (this.env.RECORDER_URL ? ` \u00B7 wake it: ${String(this.env.RECORDER_URL).replace(/\/+$/, "")}/health` : "")]),
     );
   }
 
@@ -381,18 +381,29 @@ export class CallRoom {
     // A sleeping free-tier host answers a POST with an instant 502 and does NOT
     // boot, but it does boot (and holds the request) for a GET. So first GET
     // /health, which waits for the host to come up, then POST /wake.
-    // Only one such attempt is in flight at a time.
+    // Each SFU session is woken independently (a busy peer no longer blocks the
+    // others), but they all share one /health wait while the host boots.
     const now = Date.now();
-    if (this.wakingSince && now - this.wakingSince < 100_000) return;
-    this.wakingSince = now;
+    const sid = String(body.sessionId || "");
+    this.wakingSessions ||= new Map();
+    const startedAt = this.wakingSessions.get(sid);
+    if (startedAt && now - startedAt < 100_000) return;
+    this.wakingSessions.set(sid, now);
     const base = String(RECORDER_URL).replace(/\/+$/, "");
     const logWake = (result) =>
       this.notifyDirectory("/wakelog", { at: new Date(now).toISOString(), ms: Date.now() - now, room: body.room, name: body.name, ...result });
+    if (!this.healthWait || now - this.healthWaitAt > 100_000) {
+      this.healthWaitAt = now;
+      const p = fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) }).then((r) => r.status);
+      p.catch(() => { if (this.healthWait === p) this.healthWait = null; });
+      this.healthWait = p;
+    }
+    const healthWait = this.healthWait;
     this.ctx.waitUntil(
       (async () => {
         let health = 0;
         try {
-          health = (await fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) })).status;
+          health = await healthWait;
         } catch (e) {
           logWake({ error: "health: " + String(e).slice(0, 100) });
           return;
@@ -404,12 +415,12 @@ export class CallRoom {
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(20_000),
           });
-          logWake({ health, status: r.status });
+          logWake({ health, status: r.status, reply: r.status >= 300 ? (await r.text()).slice(0, 80) : undefined });
         } catch (e) {
           logWake({ health, error: String(e).slice(0, 100) });
         }
       })().finally(() => {
-        this.wakingSince = 0;
+        this.wakingSessions.delete(sid);
       }),
     );
   }
@@ -814,7 +825,9 @@ async function handleAdmin(request, env, url, rest) {
   if (rest[0] === "api" && rest[1] === "wake-log") {
     if (!allowed) return json({ error: "unauthorized" }, 401);
     const res = await directoryStub(env).fetch("https://directory/wakelog");
-    return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
+    const data = await res.json().catch(() => ({ wakelog: [] }));
+    if (env.RECORDER_URL) data.healthUrl = String(env.RECORDER_URL).replace(/\/+$/, "") + "/health";
+    return json(data, res.status);
   }
 
   // Live check of the recorder's /health. Note: this wakes a sleeping host, so
@@ -827,7 +840,7 @@ async function handleAdmin(request, env, url, rest) {
       const r = await fetch(String(env.RECORDER_URL).replace(/\/+$/, "") + "/health", { signal: AbortSignal.timeout(8_000) });
       let info = {};
       try { info = await r.json(); } catch {}
-      return json({ alive: r.ok, status: r.status, ms: Date.now() - t0, active: info.active, uptimeSec: info.uptimeSec });
+      return json({ alive: r.ok, status: r.status, ms: Date.now() - t0, active: info.active, max: info.max, rejected: info.rejected, uptimeSec: info.uptimeSec });
     } catch (e) {
       return json({ alive: false, ms: Date.now() - t0, error: "no answer in 8s (probably asleep, or waking up)" });
     }
@@ -1386,12 +1399,13 @@ function toggleRecVideo(btn){
 loadRecordings(true); setInterval(() => loadRecordings(false), 30000);
 
 let rcLive = '';
+let rcUrl = '';
 function rcAgo(ms){ const s = Math.max(0, Math.round(ms/1000)); if(s<90) return s+'s'; const m = Math.round(s/60); return m<90 ? m+' min' : Math.round(m/60)+' h'; }
 function pingOk(e){ return e.status ? e.status < 300 : e.health === 200; }
 async function loadPings(){
   try{
     const r = await fetch('/admin/api/wake-log',{cache:'no-store'}); if(!r.ok) return;
-    const log = ((await r.json()).wakelog || []).slice().reverse();
+    const jd = await r.json(); rcUrl = jd.healthUrl || ''; const log = (jd.wakelog || []).slice().reverse();
     let head;
     if(!log.length) head = '<span class="muted">No pings recorded yet.</span>';
     else {
@@ -1403,14 +1417,14 @@ async function loadPings(){
     const rows = log.slice(0,25).map(e => {
       const ok = pingOk(e);
       const src = e.room === '(keep-alive)' ? 'keep-alive' : 'call ' + esc(String(e.room||'').slice(0,8)) + (e.name ? ' · ' + esc(e.name) : '');
-      const res = ok ? 'OK' : esc(e.error || ('HTTP ' + (e.status || e.health)));
+      const res = ok ? 'OK' : e.status === 429 ? 'Recorder full (429)' : esc(e.error || ('HTTP ' + (e.status || e.health)));
       return '<tr><td data-l="Time">'+fmtTime(e.at)+'</td><td data-l="From">'+src+'</td><td data-l="Result" style="color:'+(ok?'#34d399':'#f87171')+'">'+res+'</td><td data-l="Took">'+(e.ms||0)+' ms</td></tr>';
     }).join('');
     const table = rows ? '<table><thead><tr><th>Time</th><th>From</th><th>Result</th><th>Took</th></tr></thead><tbody>'+rows+'</tbody></table>' : '';
-    const sig = head + rows;
+    const sig = head + rows + rcUrl;
     if(sig === rcLive) return;
     rcLive = sig;
-    document.getElementById('rc').innerHTML = '<div id="rc-head" style="margin-bottom:8px">'+head+'</div><div id="rc-live" class="small muted"></div>' + (table ? '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Ping history (last '+Math.min(25,log.length)+')</summary>'+table+'</details>' : '');
+    document.getElementById('rc').innerHTML = '<div id="rc-head" style="margin-bottom:8px">'+head+'</div>'+(rcUrl ? '<div style="margin-bottom:8px"><a class="btn-sm" style="display:inline-block;text-decoration:none" href="'+esc(rcUrl)+'" target="_blank" rel="noopener">Open Render health (wakes it) &#8599;</a></div>' : '')+'<div id="rc-live" class="small muted"></div>' + (table ? '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Ping history (last '+Math.min(25,log.length)+')</summary>'+table+'</details>' : '');
   }catch(e){}
 }
 async function checkRecorder(){
@@ -1419,7 +1433,7 @@ async function checkRecorder(){
   try{
     const r = await fetch('/admin/api/recorder-status',{cache:'no-store'}); const j = await r.json();
     msg = j.alive
-      ? '<span style="color:#34d399">Live: awake</span> · answered in '+j.ms+' ms · '+(j.active||0)+' recording now'+(j.uptimeSec!=null ? ' · up '+rcAgo(j.uptimeSec*1000) : '')
+      ? '<span style="color:#34d399">Live: awake</span> · answered in '+j.ms+' ms · '+(j.active||0)+(j.max ? '/'+j.max : '')+' recording now'+(j.rejected ? ' · <span style="color:#fbbf24">'+j.rejected+' turned away (full)</span>' : '')+(j.uptimeSec!=null ? ' · up '+rcAgo(j.uptimeSec*1000) : '')
       : '<span style="color:#f87171">Live: '+esc(j.error || ('HTTP '+j.status))+'</span>';
   }catch(e){ msg = '<span style="color:#f87171">Live check failed</span>'; }
   const el = document.getElementById('rc-live'); if(el) el.innerHTML = msg;
