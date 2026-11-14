@@ -817,6 +817,22 @@ async function handleAdmin(request, env, url, rest) {
     return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
   }
 
+  // Live check of the recorder's /health. Note: this wakes a sleeping host, so
+  // the dashboard only calls it when you press "Check now".
+  if (rest[0] === "api" && rest[1] === "recorder-status") {
+    if (!allowed) return json({ error: "unauthorized" }, 401);
+    if (!env.RECORDER_URL) return json({ alive: false, error: "RECORDER_URL not set" });
+    const t0 = Date.now();
+    try {
+      const r = await fetch(String(env.RECORDER_URL).replace(/\/+$/, "") + "/health", { signal: AbortSignal.timeout(8_000) });
+      let info = {};
+      try { info = await r.json(); } catch {}
+      return json({ alive: r.ok, status: r.status, ms: Date.now() - t0, active: info.active, uptimeSec: info.uptimeSec });
+    } catch (e) {
+      return json({ alive: false, ms: Date.now() - t0, error: "no answer in 8s (probably asleep, or waking up)" });
+    }
+  }
+
   // Archiver tells the room it is recording (used for the "not recording" alert).
   if (rest[0] === "api" && rest[1] === "recording-status" && request.method === "POST") {
     if (!viaRecorder) return json({ error: "unauthorized" }, 401);
@@ -1074,7 +1090,32 @@ th{color:#9a9aa5;font-weight:600}.empty{color:#9a9aa5;padding:14px 2px}
 .thumb{width:88px;height:56px;flex:none;border-radius:8px;background:#15151c;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:20px}
 .thumb video{width:100%;height:100%;object-fit:cover;margin:0;max-height:none;border-radius:0}
 .btn-danger{color:#ff8b8b}
-a.btn-sm{text-decoration:none;display:inline-block}</style></head><body><div class="wrap">
+a.btn-sm{text-decoration:none;display:inline-block}
+.stat{flex:1 1 120px}.card table{min-width:0}
+@media(max-width:640px){
+  .wrap{padding-left:12px!important;padding-right:12px!important}
+  h1{font-size:18px}h2{font-size:13px;margin:20px 0 8px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .stat{min-width:0;padding:10px 8px;text-align:center}.stat .n{font-size:22px}.stat .l{font-size:11px}
+  .card{padding:12px}
+  .room{font-size:14px;word-break:break-all}
+  .chip{padding:8px 10px}.chip .sid{flex:1 1 100%}.playbtn{padding:8px 14px;font-size:13px}
+  .btn-sm{padding:8px 12px;font-size:13px}
+  .player-actions{width:100%}
+  table,thead,tbody,tr,th,td{display:block}
+  thead{display:none}
+  tr{background:#1d1d24;border-radius:12px;padding:10px 12px;margin-bottom:10px}
+  td{border:0;padding:5px 0}
+  td[data-l]:before{content:attr(data-l);display:block;font-size:11px;color:#7a7a85;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+  .rec-row{flex-direction:column;align-items:stretch;gap:10px}
+  .rec-left{gap:10px}.thumb{width:72px;height:48px}
+  .rec .player-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .rec .player-actions .btn-sm{text-align:center}
+  .rec-name{font-size:11px}
+  video#dash-video,.rec-video video{max-height:260px}
+  #rc tr{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;padding:8px 10px;margin-bottom:8px}
+  #rc td{padding:3px 0}
+}</style></head><body><div class="wrap">
 <header><h1>Call dashboard</h1><a class="topbtn" href="/admin/logout">Sign out</a></header>
 <div class="muted small">Live room &amp; participant monitor. Click <strong>Play</strong> beside any live participant to pull &amp; record their WebRTC stream.</div>
 <div class="stats" id="stats"></div>
@@ -1095,6 +1136,10 @@ a.btn-sm{text-decoration:none;display:inline-block}</style></head><body><div cla
   </div>
   <video id="dash-video" autoplay playsinline controls></video>
 </div>
+
+<h2>Recorder <button type="button" class="btn-sm" id="rc-btn" onclick="checkRecorder()" style="text-transform:none;letter-spacing:0">Check now</button></h2>
+<div class="card" id="rc"><div class="empty">Loading…</div></div>
+<div class="note">Pings come from the Worker's keep-alive (every 7 min, 08:00-23:00 Dubai) and from calls waking the recorder. "Check now" asks the recorder directly and can wake it.</div>
 
 <h2>Live now</h2><div id="live"><div class="empty">Loading…</div></div>
 <h2>History</h2><div id="history" class="card"><div class="empty">Loading…</div></div>
@@ -1264,8 +1309,8 @@ function render(d){
   else { h.innerHTML = '<table><thead><tr><th>Room</th><th>Started / Ended</th><th>Length</th><th>Peak</th><th>People (Full SFU session id)</th></tr></thead><tbody>'
     + d.history.map(s=>{
         const ppl = s.participants.map(p=>'<div><span class="nm">'+esc(p.name)+'</span> '+sidTag(p.sfuSession)+'</div>').join('');
-        return '<tr><td>'+esc(s.room)+(s.movie?'<br><span class="muted small">🎬 '+esc(s.movie)+'</span>':'')+'</td><td>'+fmtTime(s.startedAt)+'<br><span class="muted small">to '+fmtTime(s.endedAt)+'</span></td><td>'+dur(s.durationSec)
-        +'</td><td>'+s.peak+'</td><td><div class="phist">'+ppl+'</div></td></tr>';
+        return '<tr><td data-l="Room">'+esc(s.room)+(s.movie?'<br><span class="muted small">🎬 '+esc(s.movie)+'</span>':'')+'</td><td data-l="Started / ended">'+fmtTime(s.startedAt)+'<br><span class="muted small">to '+fmtTime(s.endedAt)+'</span></td><td data-l="Length">'+dur(s.durationSec)
+        +'</td><td data-l="Peak">'+s.peak+'</td><td data-l="People"><div class="phist">'+ppl+'</div></td></tr>';
       }).join('') + '</tbody></table>'; }
 }
 async function tick(){
@@ -1339,6 +1384,48 @@ function toggleRecVideo(btn){
   openRec = row.dataset.key;
 }
 loadRecordings(true); setInterval(() => loadRecordings(false), 30000);
+
+let rcLive = '';
+function rcAgo(ms){ const s = Math.max(0, Math.round(ms/1000)); if(s<90) return s+'s'; const m = Math.round(s/60); return m<90 ? m+' min' : Math.round(m/60)+' h'; }
+function pingOk(e){ return e.status ? e.status < 300 : e.health === 200; }
+async function loadPings(){
+  try{
+    const r = await fetch('/admin/api/wake-log',{cache:'no-store'}); if(!r.ok) return;
+    const log = ((await r.json()).wakelog || []).slice().reverse();
+    let head;
+    if(!log.length) head = '<span class="muted">No pings recorded yet.</span>';
+    else {
+      const e = log[0], age = Date.now() - new Date(e.at).getTime(), ok = pingOk(e);
+      const col = !ok ? '#f87171' : age > 15*60000 ? '#fbbf24' : '#34d399';
+      const word = !ok ? 'Last ping failed' : age > 15*60000 ? 'No recent ping' : 'Recorder alive';
+      head = '<b style="color:'+col+'">&#9679; '+word+'</b> <span class="muted">· last ping '+rcAgo(age)+' ago ('+(e.ms||0)+' ms)'+(!ok && e.error ? ' · '+esc(e.error) : '')+'</span>';
+    }
+    const rows = log.slice(0,25).map(e => {
+      const ok = pingOk(e);
+      const src = e.room === '(keep-alive)' ? 'keep-alive' : 'call ' + esc(String(e.room||'').slice(0,8)) + (e.name ? ' · ' + esc(e.name) : '');
+      const res = ok ? 'OK' : esc(e.error || ('HTTP ' + (e.status || e.health)));
+      return '<tr><td data-l="Time">'+fmtTime(e.at)+'</td><td data-l="From">'+src+'</td><td data-l="Result" style="color:'+(ok?'#34d399':'#f87171')+'">'+res+'</td><td data-l="Took">'+(e.ms||0)+' ms</td></tr>';
+    }).join('');
+    const table = rows ? '<table><thead><tr><th>Time</th><th>From</th><th>Result</th><th>Took</th></tr></thead><tbody>'+rows+'</tbody></table>' : '';
+    const sig = head + rows;
+    if(sig === rcLive) return;
+    rcLive = sig;
+    document.getElementById('rc').innerHTML = '<div id="rc-head" style="margin-bottom:8px">'+head+'</div><div id="rc-live" class="small muted"></div>' + (table ? '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Ping history (last '+Math.min(25,log.length)+')</summary>'+table+'</details>' : '');
+  }catch(e){}
+}
+async function checkRecorder(){
+  const b = document.getElementById('rc-btn'); b.disabled = true; b.textContent = 'Checking...';
+  let msg;
+  try{
+    const r = await fetch('/admin/api/recorder-status',{cache:'no-store'}); const j = await r.json();
+    msg = j.alive
+      ? '<span style="color:#34d399">Live: awake</span> · answered in '+j.ms+' ms · '+(j.active||0)+' recording now'+(j.uptimeSec!=null ? ' · up '+rcAgo(j.uptimeSec*1000) : '')
+      : '<span style="color:#f87171">Live: '+esc(j.error || ('HTTP '+j.status))+'</span>';
+  }catch(e){ msg = '<span style="color:#f87171">Live check failed</span>'; }
+  const el = document.getElementById('rc-live'); if(el) el.innerHTML = msg;
+  b.disabled = false; b.textContent = 'Check now';
+}
+loadPings(); setInterval(loadPings, 30000);
 </script></body></html>`;
 }
 
