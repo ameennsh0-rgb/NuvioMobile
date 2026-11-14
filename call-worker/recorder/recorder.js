@@ -34,7 +34,7 @@ import http from "node:http";
 import dgram from "node:dgram";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -535,8 +535,13 @@ async function handle(req, res) {
   }
   if (req.method === "GET" && url.pathname === "/logs") {
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
+    const n = Math.min(1000, Math.max(20, Number(url.searchParams.get("n")) || 300));
+    // Prefer the permanent systemd journal (survives restarts); fall back to the in-memory buffer.
+    const fromJournal = await new Promise((resolve) =>
+      execFile("journalctl", ["-u", "nuvio-recorder", "-n", String(n), "-o", "cat", "--no-pager", "-q"], { timeout: 5000, maxBuffer: 4_000_000 }, (err, out) => resolve(err ? "" : String(out))),
+    );
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    return res.end(recentLogs.join("\n") + "\n");
+    return res.end((fromJournal.trim() || recentLogs.slice(-n).join("\n")) + "\n");
   }
   if (req.method === "POST" && url.pathname === "/wake") {
     if (!authorized(req)) return send(res, 401, { error: "unauthorized" });

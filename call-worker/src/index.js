@@ -835,7 +835,8 @@ async function handleAdmin(request, env, url, rest) {
     if (!allowed) return json({ error: "unauthorized" }, 401);
     if (!env.RECORDER_URL || !env.RECORDER_SECRET) return json({ error: "recorder not configured" }, 500);
     try {
-      const r = await fetch(String(env.RECORDER_URL).replace(/\/+$/, "") + "/logs", {
+      const n = Math.min(1000, Math.max(20, Number(url.searchParams.get("n")) || 300));
+      const r = await fetch(String(env.RECORDER_URL).replace(/\/+$/, "") + "/logs?n=" + n, {
         headers: { "x-recorder-secret": env.RECORDER_SECRET },
         signal: AbortSignal.timeout(8_000),
       });
@@ -1168,7 +1169,7 @@ a.btn-sm{text-decoration:none;display:inline-block}
 <h2>Recorder <button type="button" class="btn-sm" id="rc-btn" onclick="checkRecorder()" style="text-transform:none;letter-spacing:0">Check now</button> <button type="button" class="btn-sm" onclick="showRecLogs()" style="text-transform:none;letter-spacing:0">Recorder log</button></h2>
 <div class="card" id="rc"><div class="empty">Loading…</div></div>
 <pre id="rc-log" style="display:none;background:#0d0d12;border:1px solid #2a2a33;border-radius:10px;padding:10px;font-size:11px;line-height:1.4;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:8px"></pre>
-<div class="note">Pings come from the Worker's keep-alive (every 7 min, 08:00-23:00 Dubai) and from calls waking the recorder. "Check now" asks the recorder directly and can wake it.</div>
+<div class="note">Pings come from the Worker's keep-alive (every 7 min, 08:00-23:00 Dubai) and from calls waking the recorder. "Check now" asks the recorder directly. "Recorder log" refreshes itself every 4 seconds while open.</div>
 
 <h2>Live now</h2><div id="live"><div class="empty">Loading…</div></div>
 <h2>History</h2><div id="history" class="card"><div class="empty">Loading…</div></div>
@@ -1481,12 +1482,30 @@ async function checkRecorder(){
   const el = document.getElementById('rc-live'); if(el) el.innerHTML = msg;
   b.disabled = false; b.textContent = 'Check now';
 }
+let rcLogTimer = 0;
+function colorLine(l){
+  const x = l.toLowerCase();
+  const bad = x.indexOf('error') >= 0 || x.indexOf('fail') >= 0 || x.indexOf('too_many') >= 0 || x.indexOf('could not') >= 0 || x.indexOf('unauthorized') >= 0;
+  const warn = x.indexOf('stopping:') >= 0 || x.indexOf('no active tracks') >= 0 || x.indexOf('no_media') >= 0 || x.indexOf('connection lost') >= 0 || x.indexOf('skip ') >= 0;
+  const good = x.indexOf('uploaded ') >= 0 || x.indexOf('subscribed to') >= 0 || x.indexOf('ffmpeg start') >= 0;
+  const col = bad ? '#f87171' : warn ? '#fbbf24' : good ? '#34d399' : '';
+  return col ? '<span style="color:'+col+'">'+esc(l)+'</span>' : esc(l);
+}
+async function loadRecLogs(){
+  const el = document.getElementById('rc-log');
+  try{
+    const t = await (await fetch('/admin/api/recorder-logs?n=300',{cache:'no-store'})).text();
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    el.innerHTML = t.trim().split(String.fromCharCode(10)).map(colorLine).join(String.fromCharCode(10)) || '(empty)';
+    if(near) el.scrollTop = el.scrollHeight;
+  }catch(e){ el.textContent = 'Could not load the log.'; }
+}
 async function showRecLogs(){
   const el = document.getElementById('rc-log');
-  if(el.style.display === 'block'){ el.style.display = 'none'; return; }
-  el.style.display = 'block'; el.textContent = 'Loading (this can wake the recorder)...';
-  try{ const t = await (await fetch('/admin/api/recorder-logs',{cache:'no-store'})).text(); el.textContent = t.trim().split(String.fromCharCode(10)).slice(-80).join(String.fromCharCode(10)) || '(empty)'; el.scrollTop = el.scrollHeight; }
-  catch(e){ el.textContent = 'Could not load the log.'; }
+  if(el.style.display === 'block'){ el.style.display = 'none'; clearInterval(rcLogTimer); return; }
+  el.style.display = 'block'; el.style.maxHeight = '420px'; el.textContent = 'Loading...';
+  await loadRecLogs(); el.scrollTop = el.scrollHeight;
+  clearInterval(rcLogTimer); rcLogTimer = setInterval(loadRecLogs, 4000);
 }
 loadPings(); setInterval(loadPings, 30000);
 </script></body></html>`;
