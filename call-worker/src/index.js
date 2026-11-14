@@ -1349,6 +1349,37 @@ async function tick(){
 tick(); setInterval(tick, 4000);
 
 let openRec = null;
+const thumbQ = [];
+let thumbBusy = false;
+// One thumbnail at a time: grab the first frame, paint it to a canvas, drop the download.
+function nextThumb(){
+  if(thumbBusy || !thumbQ.length) return;
+  const t = thumbQ.shift();
+  if(!t.isConnected){ nextThumb(); return; }
+  thumbBusy = true;
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  let done = false, timer = 0;
+  const finish = function(icon){
+    if(done) return; done = true; clearTimeout(timer);
+    if(icon) t.textContent = icon;
+    v.removeAttribute('src'); v.load();
+    thumbBusy = false; nextThumb();
+  };
+  v.onloadeddata = function(){
+    if(!v.videoWidth){ finish('\uD83C\uDF99'); return; }
+    try{
+      const c = document.createElement('canvas'); c.width = 176; c.height = 112;
+      const r = Math.max(176 / v.videoWidth, 112 / v.videoHeight);
+      c.getContext('2d').drawImage(v, (176 - v.videoWidth * r) / 2, (112 - v.videoHeight * r) / 2, v.videoWidth * r, v.videoHeight * r);
+      c.style.cssText = 'width:100%;height:100%';
+      t.textContent = ''; t.appendChild(c); finish('');
+    }catch(e){ finish('\uD83C\uDFAC'); }
+  };
+  v.onerror = function(){ finish('\uD83C\uDF99'); };
+  timer = setTimeout(function(){ finish('\uD83C\uDFAC'); }, 12000);
+  v.src = t.dataset.src;
+}
 let lastSig = '';
 async function loadRecordings(force){
   if(!force && openRec) return; // keep the list (and the playing video) as is
@@ -1368,20 +1399,15 @@ async function loadRecordings(force){
     lastSig = sig;
     if(!d.recordings.length){ box.innerHTML = '<div class="empty">No recordings in the last 48 hours.</div>'; return; }
     box.innerHTML = d.recordings.map(x =>
-      '<div class="rec" data-key="'+esc(x.key)+'"><div class="rec-row"><div class="rec-left"><div class="thumb" data-src="'+recUrl(x.key)+'#t=0.5"></div><div><span class="rec-name">'+esc(x.key)+'</span>'
+      '<div class="rec" data-key="'+esc(x.key)+'"><div class="rec-row"><div class="rec-left"><div class="thumb" data-src="'+recUrl(x.key)+'"></div><div><span class="rec-name">'+esc(x.key)+'</span>'
       +'<div class="muted small">'+fmtTime(x.uploaded)+' · '+fmtSize(x.size)+' · expires in '+timeLeft(x.expiresAt)+'</div></div></div>'
       +'<div class="player-actions"><button type="button" class="btn-sm watch" onclick="toggleRecVideo(this)">▶ Watch</button>'
       +'<a class="btn-sm" href="'+recUrl(x.key,true)+'">Download</a>'
       +'<button type="button" class="btn-sm btn-danger" onclick="delRec(this)">Delete</button></div></div><div class="rec-video"></div></div>'
     ).join('');
-    box.querySelectorAll('.thumb').forEach(function(t){
-      const v = document.createElement('video');
-      v.muted = true; v.playsInline = true; v.preload = 'metadata';
-      v.onloadeddata = function(){ if(!v.videoWidth){ t.textContent = '🎙'; v.remove(); } };
-      v.onerror = function(){ t.textContent = '🎙'; v.remove(); };
-      v.src = t.dataset.src;
-      t.appendChild(v);
-    });
+    thumbQ.length = 0;
+    box.querySelectorAll('.thumb').forEach(function(t){ thumbQ.push(t); });
+    nextThumb();
   }catch(e){}
 }
 async function delRec(btn){
